@@ -132,8 +132,6 @@ async def handle_request_inner(request_data: dict) -> dict:
                         "code": "RATE_LIMITED",
                         "wait_seconds": round(wait, 1),
                     }
-                limiter.record(domain)
-
             # Use request-provided ref_map, or fall back to server-side session ref_map
             req_ref_map = request_data.get("ref_map")
             if req_ref_map:
@@ -152,19 +150,28 @@ async def handle_request_inner(request_data: dict) -> dict:
 
             result = await actions.execute_action(page, action_name, params, session_ctx)
 
+            # Record rate-limit usage only after successful action execution
+            if action_name not in EXEMPT_ACTIONS and result.get("success", False):
+                from urllib.parse import urlparse as _urlparse
+                _domain = _urlparse(page.url).netloc.lower()
+                get_rate_limiter().record(_domain)
+
             # Persist updated ref_map to session state after snapshot
             if action_name == "snapshot" and "ref_map" in session_ctx:
                 browser_engine.set_session_ref_map(session_id, session_ctx["ref_map"])
                 result["refs"] = session_ctx["ref_map"]
 
             # Lightweight block detection after page-changing actions
+            # Re-fetch active page in case tab changed during action
             if result.get("page_changed"):
                 try:
                     from detection import is_blocked
-                    protection = await is_blocked(page)
-                    if protection:
-                        result["blocked"] = True
-                        result["protection"] = protection
+                    active_page = await browser_engine.get_page(session_id)
+                    if active_page:
+                        protection = await is_blocked(active_page)
+                        if protection:
+                            result["blocked"] = True
+                            result["protection"] = protection
                 except Exception:
                     pass
 

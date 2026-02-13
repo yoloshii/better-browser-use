@@ -64,7 +64,11 @@ def _ensure_patchright() -> None:
 
 
 def _ensure_camoufox() -> None:
-    """Install camoufox[geoip] + fetch Firefox binary if missing."""
+    """Install camoufox[geoip] + playwright + fetch Firefox binary if missing."""
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        _pip_install("playwright")
     try:
         import camoufox  # noqa: F401
     except ImportError:
