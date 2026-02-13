@@ -230,7 +230,5 @@ Phase 1 supports Tier 1 only. Auto-escalation comes in Phase 2.
 
 ## Do NOT Use For
 
-- Simple URL scraping → use `ultimate-scraper`
-- YouTube transcripts → use `youtube-transcript`
-- SEO audits → use `seo-crawler`
+- Simple URL scraping → use a dedicated scraper
 - Direct API calls → use `curl` / HTTP
