@@ -1,7 +1,7 @@
 ---
 name: browser-use
-version: 0.1.0
-description: Agentic browser automation with persistent sessions and ARIA snapshot-based navigation. Use when user needs to browse websites, interact with web pages, fill forms, login to sites, warm up social accounts, bypass anti-bot protection, or perform any multi-step browser task. Three stealth tiers (Playwright, Patchright, Camoufox), session persistence with cookie/storage profiles, element ref system, idle session GC, and per-session locking.
+description: Agentic browser automation with persistent sessions and ARIA snapshot-based navigation. Use when user needs to browse websites, interact with web pages, fill forms, login to sites, warm up social accounts, bypass anti-bot protection, take screenshots, execute JavaScript on pages, manage cookies, handle multi-tab workflows, or perform any multi-step browser task. Three stealth tiers (Playwright, Patchright, Camoufox) with auto-escalation for anti-bot, session persistence with cookie/storage profiles, element ref system, context compaction for long sessions, idle session GC, and per-session locking.
+allowed-tools: Bash(curl*), Bash(python*), Bash(pkill*), Read
 triggers:
   - browse
   - visit
@@ -14,6 +14,11 @@ triggers:
   - fill form
   - login to
   - bypass anti-bot
+  - screenshot
+  - execute javascript
+  - manage cookies
+  - stealth browser
+  - anti-detect
 ---
 
 # Browser-Use Skill
@@ -218,6 +223,16 @@ Use `"profile": "<name>"` in launch to restore, `"save_profile": "<name>"` in cl
 | Errors | `scripts/errors.py` | Error classification with AI-friendly transforms |
 | Config | `scripts/config.py` | Settings (env vars + defaults) |
 | Models | `scripts/models.py` | Pydantic v2 type definitions |
+
+## Configuration
+
+| Env Variable | Default | Description |
+|-------------|---------|-------------|
+| `BROWSER_USE_TOKEN` | (empty) | Bearer auth token for server. Omit to disable auth. |
+| `BROWSER_USE_EVALUATE` | `1` | Set to `0` to disable `evaluate` (arbitrary JS) action |
+| `PROXY_SERVER` | (empty) | Proxy URL (e.g., `http://proxy:8080`). Used by Tier 2/3. |
+| `PROXY_USERNAME` | (empty) | Proxy auth username |
+| `PROXY_PASSWORD` | (empty) | Proxy auth password |
 
 ## Dependencies
 
