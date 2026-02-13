@@ -516,9 +516,12 @@ async def launch(
         "tier_impl": tier_impl,
         "profile": profile,
         "lock": asyncio.Lock(),
+        "created_at": time.monotonic(),
         "last_activity": time.monotonic(),
+        "action_count": 0,
         "ref_map": {},
         "humanize": Config.HUMANIZE_ACTIONS or tier >= 2,
+        "humanize_intensity": Config.DEFAULT_HUMANIZE,
     }
 
     _save_session_meta(session_id, {
@@ -575,6 +578,7 @@ async def get_session_info(session_id: str) -> dict | None:
     if not session or session.get("closing"):
         return None
     page = session["page"]
+    now = time.monotonic()
     return {
         "session_id": session_id,
         "tier": session["tier"],
@@ -582,6 +586,10 @@ async def get_session_info(session_id: str) -> dict | None:
         "url": page.url,
         "title": await page.title(),
         "tab_count": len(session["context"].pages),
+        "action_count": session.get("action_count", 0),
+        "duration_seconds": round(now - session.get("created_at", now)),
+        "humanize": session.get("humanize", False),
+        "humanize_intensity": session.get("humanize_intensity", 1.0),
     }
 
 

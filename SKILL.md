@@ -131,7 +131,7 @@ Returns: `{success, screenshot}` (base64 PNG)
 {"op": "save", "session_id": "<id>", "profile": "my-identity"}
 {"op": "close", "session_id": "<id>", "save_profile": "my-identity"}
 {"op": "status"}
-{"op": "status", "session_id": "<id>"}
+{"op": "status", "session_id": "<id>"}  → includes action_count, duration_seconds, humanize, humanize_intensity
 {"op": "profile", "action": "list"}
 {"op": "profile", "action": "create", "name": "x-primary", "domain": "x.com"}
 {"op": "profile", "action": "load", "name": "x-primary"}
@@ -193,9 +193,13 @@ Use `"profile": "<name>"` in launch to restore, `"save_profile": "<name>"` in cl
 Tier 2+ sessions auto-enable humanized actions. Set `BROWSER_USE_HUMANIZE=1` to force for all tiers.
 
 When active:
-- **click**: Bezier curve mouse movement to element, random offset, variable settle delay
+- **click**: Bezier curve mouse movement from actual cursor position, random offset, variable settle delay
 - **type**: Gaussian inter-key delays (80ms base), digraph optimization, occasional thinking pauses
 - **scroll**: Eased acceleration/deceleration, reading pauses after scroll
+
+Mouse position is tracked via page-level listener — Bezier curves start from real cursor position, not a fixed point.
+
+Sensitive domains (linkedin.com, facebook.com, x.com, instagram.com) auto-boost humanize intensity to 1.3x when humanization is active. No configuration needed.
 
 Non-humanized path unchanged for Tier 1 speed.
 

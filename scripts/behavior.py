@@ -247,10 +247,25 @@ class HumanBehavior:
             click: Whether to click after moving
         """
         try:
-            current_pos = await page.evaluate(
-                "({x: window.mouseX || 500, y: window.mouseY || 300})"
-            )
-            start = (current_pos.get("x", 500), current_pos.get("y", 300))
+            current_pos = await page.evaluate("""(() => {
+                const t = window.__bbu_mouse;
+                return t ? {x: t.x, y: t.y} : null;
+            })()""")
+            if current_pos:
+                start = (current_pos["x"], current_pos["y"])
+            else:
+                # First movement — inject tracker and use viewport center
+                await page.evaluate("""(() => {
+                    if (!window.__bbu_mouse) {
+                        window.__bbu_mouse = {x: 0, y: 0};
+                        document.addEventListener('mousemove', e => {
+                            window.__bbu_mouse.x = e.clientX;
+                            window.__bbu_mouse.y = e.clientY;
+                        }, {passive: true});
+                    }
+                })()""")
+                vp = page.viewport_size
+                start = (vp["width"] // 2 if vp else 500, vp["height"] // 2 if vp else 300)
         except Exception:
             start = (500, 300)
 
@@ -360,12 +375,15 @@ class HumanBehavior:
     async def random_micro_movement(self, page: Any) -> None:
         """Perform small random mouse movement (humans rarely keep mouse still)."""
         try:
-            current = await page.evaluate(
-                "({x: window.mouseX || 500, y: window.mouseY || 300})"
-            )
-            x = current.get("x", 500) + random.randint(-30, 30)
-            y = current.get("y", 300) + random.randint(-30, 30)
-            await page.mouse.move(x, y)
+            current = await page.evaluate("""(() => {
+                const t = window.__bbu_mouse;
+                return t ? {x: t.x, y: t.y} : null;
+            })()""")
+            cx = current["x"] if current else 500
+            cy = current["y"] if current else 300
+            x = cx + random.randint(-30, 30)
+            y = cy + random.randint(-30, 30)
+            await page.mouse.move(max(0, x), max(0, y))
         except Exception:
             pass
 

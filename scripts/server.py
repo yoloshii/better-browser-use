@@ -141,14 +141,26 @@ async def handle_request_inner(request_data: dict) -> dict:
 
             # Build session context with humanize flag from session state
             session_data = browser_engine._sessions.get(session_id, {})
+            humanize_intensity = session_data.get("humanize_intensity", 1.0)
+
+            # Auto-boost intensity on sensitive domains (smarter, not slower)
+            if session_data.get("humanize"):
+                from urllib.parse import urlparse as _parse
+                _dom = _parse(page.url).netloc.lower()
+                if _dom in Config.SENSITIVE_RATE_LIMITS and _dom != "default":
+                    humanize_intensity = max(humanize_intensity, 1.3)
+
             session_ctx = {
                 "session_id": session_id,
                 "ref_map": ref_map,
                 "humanize": session_data.get("humanize", False),
-                "humanize_intensity": session_data.get("humanize_intensity", 1.0),
+                "humanize_intensity": humanize_intensity,
             }
 
             result = await actions.execute_action(page, action_name, params, session_ctx)
+
+            # Increment action counter
+            session_data["action_count"] = session_data.get("action_count", 0) + 1
 
             # Record rate-limit usage only after successful action execution
             if action_name not in EXEMPT_ACTIONS and result.get("success", False):
