@@ -105,6 +105,7 @@ async def handle_request_inner(request_data: dict) -> dict:
     elif op == "action":
         import browser_engine
         import actions
+        from rate_limiter import get_rate_limiter, EXEMPT_ACTIONS
 
         session_id = request_data.get("session_id")
         if not session_id:
@@ -118,6 +119,21 @@ async def handle_request_inner(request_data: dict) -> dict:
             action_name = request_data.get("action")
             params = request_data.get("params", {})
 
+            # Rate limiting (exempt read-only actions)
+            if action_name not in EXEMPT_ACTIONS:
+                from urllib.parse import urlparse
+                domain = urlparse(page.url).netloc.lower()
+                limiter = get_rate_limiter()
+                if not limiter.check(domain):
+                    wait = limiter.wait_time(domain)
+                    return {
+                        "success": False,
+                        "error": f"Rate limited on {domain}. Wait {wait:.1f}s.",
+                        "code": "RATE_LIMITED",
+                        "wait_seconds": round(wait, 1),
+                    }
+                limiter.record(domain)
+
             # Use request-provided ref_map, or fall back to server-side session ref_map
             req_ref_map = request_data.get("ref_map")
             if req_ref_map:
@@ -125,9 +141,13 @@ async def handle_request_inner(request_data: dict) -> dict:
             else:
                 ref_map = browser_engine.get_session_ref_map(session_id)
 
+            # Build session context with humanize flag from session state
+            session_data = browser_engine._sessions.get(session_id, {})
             session_ctx = {
                 "session_id": session_id,
                 "ref_map": ref_map,
+                "humanize": session_data.get("humanize", False),
+                "humanize_intensity": session_data.get("humanize_intensity", 1.0),
             }
 
             result = await actions.execute_action(page, action_name, params, session_ctx)
@@ -136,6 +156,17 @@ async def handle_request_inner(request_data: dict) -> dict:
             if action_name == "snapshot" and "ref_map" in session_ctx:
                 browser_engine.set_session_ref_map(session_id, session_ctx["ref_map"])
                 result["refs"] = session_ctx["ref_map"]
+
+            # Lightweight block detection after page-changing actions
+            if result.get("page_changed"):
+                try:
+                    from detection import is_blocked
+                    protection = await is_blocked(page)
+                    if protection:
+                        result["blocked"] = True
+                        result["protection"] = protection
+                except Exception:
+                    pass
 
             return result
 

@@ -3,6 +3,7 @@
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 
 # Strict profile name regex: alphanumeric, dots, dashes, underscores only
@@ -105,7 +106,45 @@ class Config:
     # Evaluate gating
     EVALUATE_ENABLED = os.getenv("BROWSER_USE_EVALUATE", "1") == "1"
 
+    # Humanization — global default (can be overridden per-launch)
+    HUMANIZE_ACTIONS = os.getenv("BROWSER_USE_HUMANIZE", "0") == "1"
+
+    # Geo profile — timezone/locale correlation for stealth
+    GEO = os.getenv("BROWSER_USE_GEO", "")
+
     @classmethod
     def ensure_dirs(cls) -> None:
         cls.PROFILE_DIR.mkdir(parents=True, exist_ok=True)
         cls.SESSION_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Geo profiles — timezone/locale correlation for stealth tiers
+# ---------------------------------------------------------------------------
+
+GEO_PROFILES: dict[str, dict[str, Any]] = {
+    "us": {"timezone": "America/New_York", "locale": "en-US"},
+    "us-ny": {"timezone": "America/New_York", "locale": "en-US"},
+    "us-la": {"timezone": "America/Los_Angeles", "locale": "en-US"},
+    "us-tx": {"timezone": "America/Chicago", "locale": "en-US"},
+    "de": {"timezone": "Europe/Berlin", "locale": "de-DE"},
+    "uk": {"timezone": "Europe/London", "locale": "en-GB"},
+    "fr": {"timezone": "Europe/Paris", "locale": "fr-FR"},
+    "jp": {"timezone": "Asia/Tokyo", "locale": "ja-JP"},
+    "cn": {"timezone": "Asia/Shanghai", "locale": "zh-CN"},
+    "au": {"timezone": "Australia/Sydney", "locale": "en-AU"},
+    "br": {"timezone": "America/Sao_Paulo", "locale": "pt-BR"},
+    "in": {"timezone": "Asia/Kolkata", "locale": "en-IN"},
+}
+
+
+def get_geo_config() -> dict[str, str]:
+    """Get timezone/locale from BROWSER_USE_GEO env var.
+
+    Returns dict with 'timezone' and 'locale' keys.
+    Falls back to America/New_York + en-US if not set.
+    """
+    geo = Config.GEO
+    if geo and geo in GEO_PROFILES:
+        return GEO_PROFILES[geo]
+    return {"timezone": "America/New_York", "locale": "en-US"}

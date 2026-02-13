@@ -212,6 +212,29 @@ class SessionManager:
 
 
     # -----------------------------------------------------------------------
+    # Fingerprint persistence
+    # -----------------------------------------------------------------------
+
+    def save_fingerprint(self, name: str, fp_data: dict) -> None:
+        """Save fingerprint data for a profile."""
+        pdir, err = self._safe_dir(name)
+        if err or pdir is None:
+            return
+        pdir.mkdir(parents=True, exist_ok=True)
+        (pdir / "fingerprint.json").write_text(json.dumps(fp_data, indent=2))
+        self.update_last_used(name)
+
+    def load_fingerprint(self, name: str) -> dict | None:
+        """Load fingerprint data for a profile."""
+        pdir, err = self._safe_dir(name)
+        if err or pdir is None:
+            return None
+        path = pdir / "fingerprint.json"
+        if path.exists():
+            return json.loads(path.read_text())
+        return None
+
+    # -----------------------------------------------------------------------
     # Credential injection (browser-use v0.11.9 dual-mode)
     # -----------------------------------------------------------------------
 

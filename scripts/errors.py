@@ -123,6 +123,17 @@ _CATALOG: dict[str, dict[str, Any]] = {
         "agent_action": "Escalate to higher stealth tier.",
         "user_action": "Site has anti-bot protection — escalating stealth.",
     },
+    "CAPTCHA_DETECTED": {
+        "recoverability": Recoverability.ESCALATABLE,
+        "agent_action": "CAPTCHA detected. Escalate tier or wait and retry.",
+        "user_action": "Site is showing a CAPTCHA challenge.",
+    },
+    # Rate limiting
+    "RATE_LIMITED": {
+        "recoverability": Recoverability.RECOVERABLE,
+        "agent_action": "Wait before retrying. Reduce action frequency on this domain.",
+        "user_action": "Pausing to avoid rate limiting on this site.",
+    },
     # Browser crash
     "BROWSER_CRASHED": {
         "recoverability": Recoverability.NON_RECOVERABLE,
@@ -224,6 +235,16 @@ _PATTERN_MAP: list[tuple[str, str, object]] = [
         "Execution context was destroyed",
         "CONTEXT_DESTROYED",
         lambda e: "Page navigated during the action.",
+    ),
+    (
+        "429",
+        "RATE_LIMITED",
+        lambda e: "Site returned HTTP 429 (Too Many Requests). Slow down.",
+    ),
+    (
+        "captcha",
+        "CAPTCHA_DETECTED",
+        lambda e: "CAPTCHA detected on the page.",
     ),
 ]
 

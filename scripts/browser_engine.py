@@ -13,13 +13,14 @@ from __future__ import annotations
 import abc
 import asyncio
 import json
+import re
 import sys
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
-from config import Config, validate_profile_name, safe_profile_path
+from config import Config, validate_profile_name, safe_profile_path, get_geo_config
 
 import logging
 import subprocess
@@ -69,6 +70,48 @@ def _ensure_camoufox() -> None:
     except ImportError:
         _pip_install("camoufox[geoip]")
     _run_cmd(sys.executable, "-m", "camoufox", "fetch")
+
+
+# ---------------------------------------------------------------------------
+# Tracker/fingerprinter blocking (applied to Tier 2 and 3)
+# ---------------------------------------------------------------------------
+
+TRACKER_PATTERNS: list[str] = [
+    "**/analytics.js",
+    "**/gtag/js*",
+    "**/ga.js",
+    "**/fingerprint*.js",
+    "**/fp.js",
+    "**/tracking*.js",
+    "**/pixel*.js",
+    "**/beacon*.js",
+    "**/collect*",
+    "**/_vercel/insights/**",
+    "**/clarity.js",
+    "**/hotjar*.js",
+    "**/hj-*.js",
+    "**/fullstory*.js",
+    "**/mouseflow*.js",
+    "**/cdn.segment.com/**",
+    "**/cdn.amplitude.com/**",
+    "**/cdn.mxpnl.com/**",
+    "**/sentry.io/**",
+    "**/browser-intake-datadoghq.com/**",
+    "**/google-analytics.com/**",
+    "**/googletagmanager.com/**",
+    "**/connect.facebook.net/**",
+    "**/googlesyndication.com/**",
+    "**/doubleclick.net/**",
+]
+
+
+async def _block_trackers(context: Any) -> None:
+    """Set up route interception to block tracker/analytics/fingerprinter scripts.
+
+    Uses Playwright's context.route() with glob patterns to abort matching requests.
+    """
+    for pattern in TRACKER_PATTERNS:
+        await context.route(pattern, lambda route: route.abort())
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +185,7 @@ class Tier1Playwright(BrowserTier):
         _ensure_playwright_chromium()
         from playwright.async_api import async_playwright
 
+        geo = get_geo_config()
         pw = await async_playwright().start()
         browser = await pw.chromium.launch(headless=Config.HEADLESS)
 
@@ -152,8 +196,8 @@ class Tier1Playwright(BrowserTier):
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/131.0.0.0 Safari/537.36"
             ),
-            "locale": "en-US",
-            "timezone_id": "America/New_York",
+            "locale": geo["locale"],
+            "timezone_id": geo["timezone"],
         }
 
         if profile_path:
@@ -208,14 +252,15 @@ class Tier2Patchright(BrowserTier):
         _ensure_patchright()
         from patchright.async_api import async_playwright
 
+        geo = get_geo_config()
         pw = await async_playwright().start()
         browser = await pw.chromium.launch(headless=Config.HEADLESS)
 
         context_opts: dict[str, Any] = {
             "viewport": viewport or Config.DEFAULT_VIEWPORT,
             # No custom user_agent — Patchright's default is stealthier
-            "locale": "en-US",
-            "timezone_id": "America/New_York",
+            "locale": geo["locale"],
+            "timezone_id": geo["timezone"],
         }
 
         if Config.PROXY_SERVER:
@@ -232,6 +277,10 @@ class Tier2Patchright(BrowserTier):
                 context_opts["storage_state"] = str(storage_path)
 
         context = await browser.new_context(**context_opts)
+
+        # Block trackers/fingerprinters on stealth tiers
+        await _block_trackers(context)
+
         return pw, browser, context
 
     async def teardown(self, handle: Any, browser: Any) -> None:
@@ -304,7 +353,11 @@ class Tier3Camoufox(BrowserTier):
 
             browser = await AsyncNewBrowser(pw, **camoufox_opts)
 
-            context_opts: dict[str, Any] = {}
+            geo = get_geo_config()
+            context_opts: dict[str, Any] = {
+                "locale": geo["locale"],
+                "timezone_id": geo["timezone"],
+            }
             if viewport:
                 context_opts["viewport"] = viewport
 
@@ -314,6 +367,10 @@ class Tier3Camoufox(BrowserTier):
                     context_opts["storage_state"] = str(storage_path)
 
             context = await browser.new_context(**context_opts)
+
+            # Block trackers/fingerprinters on stealth tiers
+            await _block_trackers(context)
+
             return pw, browser, context
         finally:
             if saved_display is not None:
@@ -457,6 +514,7 @@ async def launch(
         "lock": asyncio.Lock(),
         "last_activity": time.monotonic(),
         "ref_map": {},
+        "humanize": Config.HUMANIZE_ACTIONS or tier >= 2,
     }
 
     _save_session_meta(session_id, {

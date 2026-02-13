@@ -1,9 +1,9 @@
 """
 Action implementations for browser-use.
 
-Phase 1: 10 core actions.
-Phase 2 adds: warm_* actions, stealth actions.
-Phase 1.5 adds: extended actions (press, select, tab_*, go_back, etc.).
+Core (18 actions) + humanization layer via behavior module.
+When session["humanize"] is True, click/type/scroll use
+Bezier curves, Gaussian typing delays, and eased scrolling.
 """
 
 from __future__ import annotations
@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import random
 import sys
 import traceback
 from typing import Any, Callable, Coroutine
 
+from behavior import HumanBehavior
 from errors import to_ai_friendly_error
 from snapshot import take_snapshot
 
@@ -111,7 +113,11 @@ async def action_navigate(page, params: dict, session: dict) -> dict:
 
 
 async def action_click(page, params: dict, session: dict) -> dict:
-    """Click an element by ref."""
+    """Click an element by ref.
+
+    When session["humanize"] is True, moves mouse along a Bezier curve
+    to the element before clicking, with random delays.
+    """
     ref = params.get("ref")
     if not ref:
         return {"success": False, "error": "Missing required param: ref"}
@@ -124,9 +130,12 @@ async def action_click(page, params: dict, session: dict) -> dict:
     old_url = page.url
     old_tab_count = len(page.context.pages)
     try:
-        await locator.click(timeout=10_000)
+        if session.get("humanize"):
+            hb = HumanBehavior(intensity=session.get("humanize_intensity", 1.0))
+            await hb.move_to_element(page, locator, click=True)
+        else:
+            await locator.click(timeout=10_000)
     except Exception as e:
-        # If the page navigated during click, that's success (not an error)
         new_url = page.url
         if new_url != old_url:
             return {
@@ -138,7 +147,8 @@ async def action_click(page, params: dict, session: dict) -> dict:
             }
         return {"success": False, "error": to_ai_friendly_error(e)}
 
-    await asyncio.sleep(0.3)  # brief settle
+    settle = random.uniform(0.2, 0.5) if session.get("humanize") else 0.3
+    await asyncio.sleep(settle)
     new_url = page.url
     new_tab_count = len(page.context.pages)
 
@@ -152,7 +162,6 @@ async def action_click(page, params: dict, session: dict) -> dict:
         result["new_url"] = new_url
         result["new_title"] = await page.title()
 
-    # Detect if click opened a new tab/popup
     if new_tab_count > old_tab_count:
         new_page = page.context.pages[-1]
         result["new_tab_opened"] = True
@@ -187,9 +196,8 @@ async def action_fill(page, params: dict, session: dict) -> dict:
 async def action_type(page, params: dict, session: dict) -> dict:
     """Character-by-character typing. For search boxes, compose areas.
 
-    Uses locator.press_sequentially() to type directly into the target
-    element instead of clicking then using the global keyboard, which
-    avoids focus-loss issues.
+    When session["humanize"] is True, uses Gaussian inter-key delays
+    with digraph optimization. Otherwise uses fixed delay.
     """
     ref = params.get("ref")
     text = params.get("text", "")
@@ -203,7 +211,11 @@ async def action_type(page, params: dict, session: dict) -> dict:
         return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
 
     try:
-        await locator.press_sequentially(text, delay=delay, timeout=10_000)
+        if session.get("humanize"):
+            hb = HumanBehavior(intensity=session.get("humanize_intensity", 1.0))
+            await hb.human_type(page, locator, text, clear_first=False)
+        else:
+            await locator.press_sequentially(text, delay=delay, timeout=10_000)
         return {
             "success": True,
             "extracted_content": f"Typed {len(text)} chars into {ref}",
@@ -213,7 +225,11 @@ async def action_type(page, params: dict, session: dict) -> dict:
 
 
 async def action_scroll(page, params: dict, session: dict) -> dict:
-    """Scroll the page."""
+    """Scroll the page.
+
+    When session["humanize"] is True, uses eased acceleration/deceleration
+    with reading pauses after scrolling.
+    """
     direction = params.get("direction", "down")
     amount = params.get("amount", 300)  # pixels or "page"
 
@@ -221,14 +237,17 @@ async def action_scroll(page, params: dict, session: dict) -> dict:
         vp = page.viewport_size
         amount = vp["height"] if vp else 800
 
-    delta_y = int(amount) if direction == "down" else -int(amount)
-
     try:
-        await page.mouse.wheel(0, delta_y)
-        await asyncio.sleep(0.3)  # settle
+        if session.get("humanize"):
+            hb = HumanBehavior(intensity=session.get("humanize_intensity", 1.0))
+            await hb.smooth_scroll(page, direction=direction, amount=int(amount))
+        else:
+            delta_y = int(amount) if direction == "down" else -int(amount)
+            await page.mouse.wheel(0, delta_y)
+            await asyncio.sleep(0.3)
         return {
             "success": True,
-            "extracted_content": f"Scrolled {direction} {abs(delta_y)}px",
+            "extracted_content": f"Scrolled {direction} {abs(int(amount))}px",
         }
     except Exception as e:
         return {"success": False, "error": to_ai_friendly_error(e)}

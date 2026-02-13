@@ -188,6 +188,39 @@ Profiles store identity state across sessions:
 
 Use `"profile": "<name>"` in launch to restore, `"save_profile": "<name>"` in close to persist.
 
+## Humanization
+
+Tier 2+ sessions auto-enable humanized actions. Set `BROWSER_USE_HUMANIZE=1` to force for all tiers.
+
+When active:
+- **click**: Bezier curve mouse movement to element, random offset, variable settle delay
+- **type**: Gaussian inter-key delays (80ms base), digraph optimization, occasional thinking pauses
+- **scroll**: Eased acceleration/deceleration, reading pauses after scroll
+
+Non-humanized path unchanged for Tier 1 speed.
+
+## Rate Limiting
+
+Server enforces per-domain action rate limits (from `Config.SENSITIVE_RATE_LIMITS`):
+
+| Domain | Limit |
+|--------|-------|
+| default | 8/min |
+| linkedin.com | 4/min |
+| facebook.com | 5/min |
+| x.com / twitter.com | 6/min |
+| instagram.com | 4/min |
+
+Read-only actions (snapshot, screenshot, cookies_get) are exempt.
+If rate limited, response includes `{"code": "RATE_LIMITED", "wait_seconds": N}`.
+
+## Block Detection
+
+After page-changing actions, server runs lightweight block detection.
+If blocked, response includes `{"blocked": true, "protection": "<type>"}`.
+
+Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic.
+
 ## Error Handling
 
 | Error | Recoverability | Action |
@@ -196,32 +229,38 @@ Use `"profile": "<name>"` in launch to restore, `"save_profile": "<name>"` in cl
 | Navigation timeout | RECOVERABLE | Retry navigate, check URL |
 | Page crashed / context destroyed | NON_RECOVERABLE | Close session, relaunch |
 | Anti-bot detection (403/captcha) | ESCALATABLE | Escalate tier or rotate proxy |
+| Rate limited (429) | RECOVERABLE | Wait, then retry with reduced frequency |
+| CAPTCHA detected | ESCALATABLE | Escalate tier or wait and retry |
 | Session not found / expired | NON_RECOVERABLE | Launch new session |
 | Auth error (401/403 on server) | NON_RECOVERABLE | Check BROWSER_USE_TOKEN |
 | Response truncated | RECOVERABLE | Use more targeted snapshot (compact=true, reduce max_depth) |
 
 ## Stealth Tiers
 
-| Tier | Engine | When |
-|------|--------|------|
-| 1 | Playwright (Chromium) | General browsing, friendly sites |
-| 2 | Patchright (patched Chromium) | Moderate anti-bot (no custom UA, stealth defaults) |
-| 3 | Camoufox (Firefox C++ fork) | Turnstile, DataDome — with GeoIP + residential proxy |
+| Tier | Engine | Tracker Blocking | Humanize | When |
+|------|--------|-----------------|----------|------|
+| 1 | Playwright (Chromium) | No | Opt-in | General browsing, friendly sites |
+| 2 | Patchright (patched Chromium) | Yes | Auto | Moderate anti-bot (no custom UA, stealth defaults) |
+| 3 | Camoufox (Firefox C++ fork) | Yes | Auto | Turnstile, DataDome — with GeoIP + residential proxy |
 
 ## Architecture
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| Server | `scripts/server.py` | aiohttp HTTP server, auth, request routing, truncation |
+| Server | `scripts/server.py` | aiohttp HTTP server, auth, request routing, rate limiting, block detection |
 | Agent | `scripts/agent.py` | stdin/stdout JSON interface (alternative to server) |
-| Browser Engine | `scripts/browser_engine.py` | Multi-tier browser lifecycle (Playwright/Patchright/Camoufox), session management, idle GC |
-| Actions | `scripts/actions.py` | Action dispatcher (10 core + 8 extended) |
+| Browser Engine | `scripts/browser_engine.py` | Multi-tier browser lifecycle, tracker blocking, session management, idle GC |
+| Actions | `scripts/actions.py` | Action dispatcher (18 actions) with humanization layer |
+| Behavior | `scripts/behavior.py` | Bezier mouse curves, Gaussian typing delays, eased scrolling |
+| Detection | `scripts/detection.py` | Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX), site profiles |
+| Fingerprint | `scripts/fingerprint.py` | SQLite-backed fingerprint persistence per domain, rotation on block rate |
+| Rate Limiter | `scripts/rate_limiter.py` | Per-domain sliding window rate limiter |
 | Snapshot | `scripts/snapshot.py` | ARIA tree parser, ref assignment |
-| Session | `scripts/session.py` | Profile persistence (cookies/storage), path-safe naming |
+| Session | `scripts/session.py` | Profile persistence (cookies/storage/fingerprints), path-safe naming |
 | FSM | `scripts/agent_fsm.py` | State machine for agent loop |
 | Compaction | `scripts/context_compaction.py` | LLM history summarization |
 | Errors | `scripts/errors.py` | Error classification with AI-friendly transforms |
-| Config | `scripts/config.py` | Settings (env vars + defaults) |
+| Config | `scripts/config.py` | Settings, geo profiles, env vars |
 | Models | `scripts/models.py` | Pydantic v2 type definitions |
 
 ## Configuration
@@ -230,9 +269,28 @@ Use `"profile": "<name>"` in launch to restore, `"save_profile": "<name>"` in cl
 |-------------|---------|-------------|
 | `BROWSER_USE_TOKEN` | (empty) | Bearer auth token for server. Omit to disable auth. |
 | `BROWSER_USE_EVALUATE` | `1` | Set to `0` to disable `evaluate` (arbitrary JS) action |
+| `BROWSER_USE_HUMANIZE` | `0` | Set to `1` to force humanized actions on all tiers (Tier 2+ auto-enables) |
+| `BROWSER_USE_GEO` | (empty) | Geo profile for timezone/locale (e.g., `us`, `uk`, `de`, `jp`). See geo profiles below. |
 | `PROXY_SERVER` | (empty) | Proxy URL (e.g., `http://proxy:8080`). Used by Tier 2/3. |
 | `PROXY_USERNAME` | (empty) | Proxy auth username |
 | `PROXY_PASSWORD` | (empty) | Proxy auth password |
+
+### Geo Profiles
+
+Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
+
+| Code | Timezone | Locale |
+|------|----------|--------|
+| `us` | America/New_York | en-US |
+| `us-la` | America/Los_Angeles | en-US |
+| `us-tx` | America/Chicago | en-US |
+| `uk` | Europe/London | en-GB |
+| `de` | Europe/Berlin | de-DE |
+| `fr` | Europe/Paris | fr-FR |
+| `jp` | Asia/Tokyo | ja-JP |
+| `au` | Australia/Sydney | en-AU |
+| `br` | America/Sao_Paulo | pt-BR |
+| `in` | Asia/Kolkata | en-IN |
 
 ## Dependencies
 
