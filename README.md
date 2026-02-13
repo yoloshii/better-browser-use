@@ -149,9 +149,13 @@ Tier 2+ auto-enable human-like behavior simulation. Force for Tier 1 with `BROWS
 
 | Action | Humanized Behavior |
 |--------|-------------------|
-| **click** | Bezier curve mouse movement to element, random offset within bounding box, variable settle delay (200-500ms) |
+| **click** | Bezier curve mouse movement from tracked cursor position, random offset within bounding box, variable settle delay (200-500ms) |
 | **type** | Gaussian inter-key delays (~80ms base), digraph optimization (common letter pairs typed faster), occasional thinking pauses |
 | **scroll** | Eased acceleration/deceleration, simulated reading pauses between scroll bursts |
+
+Mouse position is tracked via a page-level listener — Bezier curves start from actual cursor position, not a fixed point.
+
+Sensitive domains (linkedin.com, facebook.com, x.com, instagram.com) automatically get 1.3x humanization intensity when humanization is active. No configuration needed.
 
 Non-humanized path stays unchanged for Tier 1 speed.
 
