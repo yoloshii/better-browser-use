@@ -21,6 +21,55 @@ from typing import Any
 
 from config import Config, validate_profile_name, safe_profile_path
 
+import logging
+import subprocess
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Auto-install helpers
+# ---------------------------------------------------------------------------
+
+def _pip_install(*packages: str) -> None:
+    """Install Python packages via pip. Raises on failure."""
+    cmd = [sys.executable, "-m", "pip", "install", "--quiet", *packages]
+    log.info("Auto-installing: %s", " ".join(packages))
+    subprocess.check_call(cmd)
+
+
+def _run_cmd(*args: str) -> None:
+    """Run a shell command. Raises on failure."""
+    log.info("Running: %s", " ".join(args))
+    subprocess.check_call(args)
+
+
+def _ensure_playwright_chromium() -> None:
+    """Install playwright + Chromium browser if missing."""
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        _pip_install("playwright")
+    _run_cmd(sys.executable, "-m", "playwright", "install", "chromium")
+
+
+def _ensure_patchright() -> None:
+    """Install patchright + Chromium browser if missing."""
+    try:
+        import patchright  # noqa: F401
+    except ImportError:
+        _pip_install("patchright")
+    _run_cmd(sys.executable, "-m", "patchright", "install", "chromium")
+
+
+def _ensure_camoufox() -> None:
+    """Install camoufox[geoip] + fetch Firefox binary if missing."""
+    try:
+        import camoufox  # noqa: F401
+    except ImportError:
+        _pip_install("camoufox[geoip]")
+    _run_cmd(sys.executable, "-m", "camoufox", "fetch")
+
 
 # ---------------------------------------------------------------------------
 # BrowserTier ABC (browser-ai Provider pattern)
@@ -90,6 +139,7 @@ class Tier1Playwright(BrowserTier):
         viewport: dict | None = None,
         **kwargs: Any,
     ) -> tuple[Any, Any, Any]:
+        _ensure_playwright_chromium()
         from playwright.async_api import async_playwright
 
         pw = await async_playwright().start()
@@ -128,8 +178,8 @@ class Tier1Playwright(BrowserTier):
 class Tier2Patchright(BrowserTier):
     """Patchright — patched Chromium with stealth.
 
-    Drop-in Playwright replacement.  Key differences from Tier 1:
-      - Import from patchright.async_api (falls back to playwright)
+    Key differences from Tier 1:
+      - Imports from patchright.async_api (auto-installed if missing)
       - No custom user_agent (Patchright's default Chrome UA is stealthier)
       - Proxy support via Config env vars
     """
@@ -155,10 +205,8 @@ class Tier2Patchright(BrowserTier):
         viewport: dict | None = None,
         **kwargs: Any,
     ) -> tuple[Any, Any, Any]:
-        try:
-            from patchright.async_api import async_playwright
-        except ImportError:
-            from playwright.async_api import async_playwright
+        _ensure_patchright()
+        from patchright.async_api import async_playwright
 
         pw = await async_playwright().start()
         browser = await pw.chromium.launch(headless=Config.HEADLESS)
@@ -229,6 +277,8 @@ class Tier3Camoufox(BrowserTier):
         **kwargs: Any,
     ) -> tuple[Any, Any, Any]:
         import os
+
+        _ensure_camoufox()
         from playwright.async_api import async_playwright
         from camoufox import AsyncNewBrowser
 

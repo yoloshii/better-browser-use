@@ -221,19 +221,24 @@ Use `"profile": "<name>"` in launch to restore, `"save_profile": "<name>"` in cl
 
 ## Dependencies
 
-**Required (Tier 1):**
+**Core (all tiers):**
 - Python 3.10+
+- pydantic v2 (`pip install pydantic>=2.0`) — request/response models
+- aiohttp (`pip install aiohttp`) — HTTP server
+
+**Tier 1 — Playwright (Chromium):**
 - playwright (`pip install playwright && playwright install chromium`)
-- pydantic v2 (`pip install pydantic>=2.0`)
-- aiohttp (`pip install aiohttp`)
 
-**Tier 2 (Patchright):**
+**Tier 2 — Patchright (stealth Chromium):**
 - patchright (`pip install patchright && patchright install chromium`)
-- Drop-in Playwright replacement — falls back to Playwright if not installed
+- Patched Playwright fork with stealth defaults (no `navigator.webdriver` leak, isolated JS eval)
 
-**Tier 3 (Camoufox):**
+**Tier 3 — Camoufox (anti-detect Firefox):**
 - camoufox (`pip install camoufox[geoip] && python -m camoufox fetch`)
-- Requires `playwright` (uses Playwright Firefox protocol under the hood)
+- playwright (`pip install playwright`) — Camoufox uses Playwright Firefox protocol
+- browserforge (installed with camoufox) — statistical fingerprint generation
+
+All tiers auto-install their dependencies on first use if not already present.
 
 ## Do NOT Use For
 
