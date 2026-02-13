@@ -1,7 +1,7 @@
 ---
 name: browser-use
 version: 0.1.0
-description: Agentic browser automation with persistent sessions and ARIA snapshot-based navigation. Use when user needs to browse websites, interact with web pages, fill forms, login to sites, warm up social accounts, bypass anti-bot protection, or perform any multi-step browser task. Handles Tier 1 Playwright, session persistence with cookie/storage profiles, element ref system, idle session GC, and per-session locking.
+description: Agentic browser automation with persistent sessions and ARIA snapshot-based navigation. Use when user needs to browse websites, interact with web pages, fill forms, login to sites, warm up social accounts, bypass anti-bot protection, or perform any multi-step browser task. Three stealth tiers (Playwright, Patchright, Camoufox), session persistence with cookie/storage profiles, element ref system, idle session GC, and per-session locking.
 triggers:
   - browse
   - visit
@@ -178,7 +178,7 @@ Profiles store identity state across sessions:
 ├── cookies.json
 ├── storage.json    (localStorage + sessionStorage)
 ├── meta.json       (tier, domain, timestamps)
-└── fingerprint.json (Phase 2: BrowserForge)
+└── fingerprint.json (Tier 3: BrowserForge)
 ```
 
 Use `"profile": "<name>"` in launch to restore, `"save_profile": "<name>"` in close to persist.
@@ -195,15 +195,13 @@ Use `"profile": "<name>"` in launch to restore, `"save_profile": "<name>"` in cl
 | Auth error (401/403 on server) | NON_RECOVERABLE | Check BROWSER_USE_TOKEN |
 | Response truncated | RECOVERABLE | Use more targeted snapshot (compact=true, reduce max_depth) |
 
-## Stealth Tiers (Phase 2)
+## Stealth Tiers
 
 | Tier | Engine | When |
 |------|--------|------|
 | 1 | Playwright (Chromium) | General browsing, friendly sites |
-| 2 | Patchright (patched Chromium) | Moderate anti-bot |
+| 2 | Patchright (patched Chromium) | Moderate anti-bot (no custom UA, stealth defaults) |
 | 3 | Camoufox (Firefox C++ fork) | Turnstile, DataDome — with GeoIP + residential proxy |
-
-Phase 1 supports Tier 1 only. Auto-escalation comes in Phase 2.
 
 ## Architecture
 
@@ -211,7 +209,7 @@ Phase 1 supports Tier 1 only. Auto-escalation comes in Phase 2.
 |-----------|------|---------|
 | Server | `scripts/server.py` | aiohttp HTTP server, auth, request routing, truncation |
 | Agent | `scripts/agent.py` | stdin/stdout JSON interface (alternative to server) |
-| Browser Engine | `scripts/browser_engine.py` | Playwright lifecycle, session management, idle GC |
+| Browser Engine | `scripts/browser_engine.py` | Multi-tier browser lifecycle (Playwright/Patchright/Camoufox), session management, idle GC |
 | Actions | `scripts/actions.py` | Action dispatcher (10 core + 8 extended) |
 | Snapshot | `scripts/snapshot.py` | ARIA tree parser, ref assignment |
 | Session | `scripts/session.py` | Profile persistence (cookies/storage), path-safe naming |
@@ -223,15 +221,19 @@ Phase 1 supports Tier 1 only. Auto-escalation comes in Phase 2.
 
 ## Dependencies
 
-**Required:**
+**Required (Tier 1):**
 - Python 3.10+
 - playwright (`pip install playwright && playwright install chromium`)
 - pydantic v2 (`pip install pydantic>=2.0`)
 - aiohttp (`pip install aiohttp`)
 
-**Optional (Phase 2 — stealth tiers, not yet implemented):**
-- patchright — Tier 2: patched Playwright with stealth (`pip install patchright`)
-- camoufox — Tier 3: anti-detect Firefox with fingerprint spoofing (`pip install camoufox`)
+**Tier 2 (Patchright):**
+- patchright (`pip install patchright && patchright install chromium`)
+- Drop-in Playwright replacement — falls back to Playwright if not installed
+
+**Tier 3 (Camoufox):**
+- camoufox (`pip install camoufox[geoip] && python -m camoufox fetch`)
+- Requires `playwright` (uses Playwright Firefox protocol under the hood)
 
 ## Do NOT Use For
 

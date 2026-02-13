@@ -1,11 +1,11 @@
 """
 Multi-tier browser engine with BrowserTier ABC pattern.
 
-Phase 1: Tier 1 (vanilla Playwright Chromium).
-Phase 2 adds Tier 2 (Patchright) and Tier 3 (Camoufox).
+Tier 1: Vanilla Playwright Chromium — no stealth, fastest startup.
+Tier 2: Patchright — patched Chromium with stealth (no user_agent override).
+Tier 3: Camoufox — anti-detect Firefox with fingerprint spoofing + GeoIP.
 
 All tiers implement BrowserTier ABC: detect() → init() → teardown().
-Ported from browser-ai's Provider interface pattern.
 """
 
 from __future__ import annotations
@@ -126,7 +126,13 @@ class Tier1Playwright(BrowserTier):
 
 
 class Tier2Patchright(BrowserTier):
-    """Patchright — patched Playwright with stealth. Phase 2."""
+    """Patchright — patched Chromium with stealth.
+
+    Drop-in Playwright replacement.  Key differences from Tier 1:
+      - Import from patchright.async_api (falls back to playwright)
+      - No custom user_agent (Patchright's default Chrome UA is stealthier)
+      - Proxy support via Config env vars
+    """
 
     @property
     def tier_number(self) -> int:
@@ -143,15 +149,63 @@ class Tier2Patchright(BrowserTier):
         except ImportError:
             return False
 
-    async def init(self, profile_path=None, viewport=None, **kwargs):
-        raise NotImplementedError("Tier 2 (Patchright) — Phase 2")
+    async def init(
+        self,
+        profile_path: str | None = None,
+        viewport: dict | None = None,
+        **kwargs: Any,
+    ) -> tuple[Any, Any, Any]:
+        try:
+            from patchright.async_api import async_playwright
+        except ImportError:
+            from playwright.async_api import async_playwright
 
-    async def teardown(self, handle, browser):
-        raise NotImplementedError("Tier 2 teardown — Phase 2")
+        pw = await async_playwright().start()
+        browser = await pw.chromium.launch(headless=Config.HEADLESS)
+
+        context_opts: dict[str, Any] = {
+            "viewport": viewport or Config.DEFAULT_VIEWPORT,
+            # No custom user_agent — Patchright's default is stealthier
+            "locale": "en-US",
+            "timezone_id": "America/New_York",
+        }
+
+        if Config.PROXY_SERVER:
+            proxy: dict[str, str] = {"server": Config.PROXY_SERVER}
+            if Config.PROXY_USERNAME:
+                proxy["username"] = Config.PROXY_USERNAME
+            if Config.PROXY_PASSWORD:
+                proxy["password"] = Config.PROXY_PASSWORD
+            context_opts["proxy"] = proxy
+
+        if profile_path:
+            storage_path = Path(profile_path) / "storage.json"
+            if storage_path.exists():
+                context_opts["storage_state"] = str(storage_path)
+
+        context = await browser.new_context(**context_opts)
+        return pw, browser, context
+
+    async def teardown(self, handle: Any, browser: Any) -> None:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+        try:
+            await handle.stop()
+        except Exception:
+            pass
 
 
 class Tier3Camoufox(BrowserTier):
-    """Camoufox — anti-detect Firefox with residential proxy + GeoIP. Phase 2."""
+    """Camoufox — anti-detect Firefox with C++ fingerprint spoofing + GeoIP.
+
+    Uses AsyncNewBrowser with manual Playwright control (not the context
+    manager) so the session can persist across multiple requests.
+
+    GeoIP auto-detects timezone/locale from proxy exit IP when a proxy
+    is configured.  Humanize adds human-like input delays.
+    """
 
     @property
     def tier_number(self) -> int:
@@ -168,11 +222,62 @@ class Tier3Camoufox(BrowserTier):
         except ImportError:
             return False
 
-    async def init(self, profile_path=None, viewport=None, **kwargs):
-        raise NotImplementedError("Tier 3 (Camoufox) — Phase 2")
+    async def init(
+        self,
+        profile_path: str | None = None,
+        viewport: dict | None = None,
+        **kwargs: Any,
+    ) -> tuple[Any, Any, Any]:
+        import os
+        from playwright.async_api import async_playwright
+        from camoufox import AsyncNewBrowser
 
-    async def teardown(self, handle, browser):
-        raise NotImplementedError("Tier 3 teardown — Phase 2")
+        # Camoufox (Firefox) can fail with X11 errors in WSL/headless — unset DISPLAY
+        saved_display = os.environ.pop("DISPLAY", None)
+
+        try:
+            pw = await async_playwright().start()
+
+            camoufox_opts: dict[str, Any] = {
+                "headless": Config.HEADLESS,
+                "humanize": Config.DEFAULT_HUMANIZE or None,
+                "geoip": bool(Config.PROXY_SERVER),
+            }
+
+            if Config.PROXY_SERVER:
+                proxy: dict[str, str] = {"server": Config.PROXY_SERVER}
+                if Config.PROXY_USERNAME:
+                    proxy["username"] = Config.PROXY_USERNAME
+                if Config.PROXY_PASSWORD:
+                    proxy["password"] = Config.PROXY_PASSWORD
+                camoufox_opts["proxy"] = proxy
+
+            browser = await AsyncNewBrowser(pw, **camoufox_opts)
+
+            context_opts: dict[str, Any] = {}
+            if viewport:
+                context_opts["viewport"] = viewport
+
+            if profile_path:
+                storage_path = Path(profile_path) / "storage.json"
+                if storage_path.exists():
+                    context_opts["storage_state"] = str(storage_path)
+
+            context = await browser.new_context(**context_opts)
+            return pw, browser, context
+        finally:
+            if saved_display is not None:
+                os.environ["DISPLAY"] = saved_display
+
+    async def teardown(self, handle: Any, browser: Any) -> None:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+        try:
+            await handle.stop()
+        except Exception:
+            pass
 
 
 # Tier registry
@@ -255,7 +360,7 @@ async def launch(
     """Launch a new browser session.
 
     Args:
-        tier: Stealth tier (1-3). Phase 1 supports tier 1 only.
+        tier: Stealth tier (1=Playwright, 2=Patchright, 3=Camoufox).
         profile: Profile name to load (from ~/.browser-use/profiles/<name>/).
         viewport: Override viewport dict.
         url: Navigate to this URL after launch.
