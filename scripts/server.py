@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""
+Lightweight HTTP server for browser-use skill.
+
+Keeps browser sessions alive between requests.
+Exposes the same JSON API as agent.py but over HTTP.
+
+Usage:
+    python scripts/server.py [--port 8500]
+
+All requests: POST / with JSON body (same format as agent.py stdin).
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import secrets
+import signal
+import sys
+from http import HTTPStatus
+
+# Ensure scripts/ is on path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from config import Config
+
+# Import aiohttp for lightweight server
+from aiohttp import web
+
+
+# ---------------------------------------------------------------------------
+# Auth middleware
+# ---------------------------------------------------------------------------
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler) -> web.StreamResponse:
+    """Bearer token auth middleware.
+
+    Skips auth for /health endpoint and when no token is configured.
+    """
+    # Health check is always unauthenticated
+    if request.path == "/health":
+        return await handler(request)
+
+    token = Config.AUTH_TOKEN
+    if not token:
+        # No token configured — auth disabled (dev mode)
+        return await handler(request)
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return web.json_response(
+            {"success": False, "error": "Missing or malformed Authorization header"},
+            status=HTTPStatus.UNAUTHORIZED,
+        )
+
+    provided = auth_header[7:]  # strip "Bearer "
+    if not secrets.compare_digest(provided, token):
+        return web.json_response(
+            {"success": False, "error": "Invalid token"},
+            status=HTTPStatus.FORBIDDEN,
+        )
+
+    return await handler(request)
+
+
+async def _with_session_lock(session_id: str, coro_fn):
+    """Execute a coroutine factory while holding the session lock.
+
+    Args:
+        session_id: Session to lock.
+        coro_fn: Zero-arg async callable (NOT a pre-created coroutine).
+                 Called only after the lock is acquired.
+
+    Also touches the session's last_activity timestamp.
+    Returns the coroutine result, or an error dict if session not found.
+    """
+    import browser_engine
+
+    lock = browser_engine.get_session_lock(session_id)
+    if lock is None:
+        return {"success": False, "error": f"Session {session_id} not found or expired"}
+
+    async with lock:
+        browser_engine.touch_session(session_id)
+        return await coro_fn()
+
+
+async def handle_request_inner(request_data: dict) -> dict:
+    """Route request to handler (same logic as agent.py)."""
+    op = request_data.get("op", "")
+
+    if op == "launch":
+        import browser_engine
+        return await browser_engine.launch(
+            tier=request_data.get("tier", 1),
+            profile=request_data.get("profile"),
+            viewport=request_data.get("viewport"),
+            url=request_data.get("url"),
+        )
+
+    elif op == "action":
+        import browser_engine
+        import actions
+
+        session_id = request_data.get("session_id")
+        if not session_id:
+            return {"success": False, "error": "Missing session_id"}
+
+        async def _do_action():
+            page = await browser_engine.get_page(session_id)
+            if page is None:
+                return {"success": False, "error": f"Session {session_id} not found or expired"}
+
+            action_name = request_data.get("action")
+            params = request_data.get("params", {})
+
+            # Use request-provided ref_map, or fall back to server-side session ref_map
+            req_ref_map = request_data.get("ref_map")
+            if req_ref_map:
+                ref_map = req_ref_map
+            else:
+                ref_map = browser_engine.get_session_ref_map(session_id)
+
+            session_ctx = {
+                "session_id": session_id,
+                "ref_map": ref_map,
+            }
+
+            result = await actions.execute_action(page, action_name, params, session_ctx)
+
+            # Persist updated ref_map to session state after snapshot
+            if action_name == "snapshot" and "ref_map" in session_ctx:
+                browser_engine.set_session_ref_map(session_id, session_ctx["ref_map"])
+                result["refs"] = session_ctx["ref_map"]
+
+            return result
+
+        return await _with_session_lock(session_id, _do_action)
+
+    elif op == "snapshot":
+        import browser_engine
+        from snapshot import take_snapshot
+
+        session_id = request_data.get("session_id")
+        if not session_id:
+            return {"success": False, "error": "Missing session_id"}
+
+        async def _do_snapshot():
+            page = await browser_engine.get_page(session_id)
+            if page is None:
+                return {"success": False, "error": f"Session {session_id} not found or expired"}
+
+            result = await take_snapshot(
+                page,
+                compact=request_data.get("compact", True),
+                max_depth=request_data.get("max_depth", 10),
+                cursor_interactive=request_data.get("cursor_interactive", True),
+            )
+
+            # Persist ref_map to session state for subsequent actions
+            if result.get("success") and "refs" in result:
+                browser_engine.set_session_ref_map(session_id, result["refs"])
+
+            return result
+
+        return await _with_session_lock(session_id, _do_snapshot)
+
+    elif op == "screenshot":
+        import browser_engine
+        import base64
+
+        session_id = request_data.get("session_id")
+        if not session_id:
+            return {"success": False, "error": "Missing session_id"}
+
+        async def _do_screenshot():
+            page = await browser_engine.get_page(session_id)
+            if page is None:
+                return {"success": False, "error": f"Session {session_id} not found or expired"}
+
+            try:
+                data = await page.screenshot(
+                    full_page=request_data.get("full_page", False),
+                    type="png",
+                )
+                return {
+                    "success": True,
+                    "screenshot": base64.b64encode(data).decode("ascii"),
+                    "size": len(data),
+                }
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        return await _with_session_lock(session_id, _do_screenshot)
+
+    elif op == "close":
+        import browser_engine
+
+        session_id = request_data.get("session_id")
+        if not session_id:
+            return {"success": False, "error": "Missing session_id"}
+
+        async def _do_close():
+            if request_data.get("save_profile"):
+                await browser_engine.save_state(session_id, request_data.get("save_profile"))
+            return await browser_engine.close(session_id)
+
+        return await _with_session_lock(session_id, _do_close)
+
+    elif op == "save":
+        import browser_engine
+
+        session_id = request_data.get("session_id")
+        if not session_id:
+            return {"success": False, "error": "Missing session_id"}
+
+        async def _do_save():
+            return await browser_engine.save_state(
+                session_id,
+                request_data.get("profile"),
+            )
+
+        return await _with_session_lock(session_id, _do_save)
+
+    elif op == "status":
+        import browser_engine
+
+        session_id = request_data.get("session_id")
+        if session_id:
+            info = await browser_engine.get_session_info(session_id)
+            if info is None:
+                return {"success": False, "error": f"Session {session_id} not found"}
+            return {"success": True, **info}
+        else:
+            sessions = await browser_engine.list_sessions()
+            return {"success": True, "sessions": sessions}
+
+    elif op == "profile":
+        from session import SessionManager
+        mgr = SessionManager()
+        sub = request_data.get("action", "list")
+
+        if sub == "create":
+            return mgr.create_profile(
+                name=request_data["name"],
+                domain=request_data["domain"],
+                tier=request_data.get("tier", 1),
+            )
+        elif sub == "load":
+            profile = mgr.load_profile(request_data["name"])
+            return {"success": profile is not None, "profile": profile}
+        elif sub == "list":
+            return {"success": True, "profiles": mgr.list_profiles()}
+        elif sub == "delete":
+            return mgr.delete_profile(request_data["name"])
+        else:
+            return {"success": False, "error": f"Unknown profile action: {sub}"}
+
+    elif op == "ping":
+        return {"success": True, "message": "pong"}
+
+    else:
+        return {
+            "success": False,
+            "error": f"Unknown op: {op}. "
+                     "Valid: launch, action, snapshot, screenshot, close, save, status, profile, ping",
+        }
+
+
+def _truncate_result(result: dict, original_bytes: int) -> dict:
+    """Truncate oversized result while preserving success/error semantics.
+
+    Instead of replacing the entire result with a new success=True dict,
+    truncate the largest string fields and add truncation metadata.
+    """
+    max_bytes = Config.MAX_SNAPSHOT_BYTES
+    truncated_fields = []
+
+    # Identify string fields that can be truncated, sorted by size descending
+    trunc_candidates = []
+    for key, val in result.items():
+        if isinstance(val, str) and key not in ("success", "error"):
+            trunc_candidates.append((key, len(val)))
+    trunc_candidates.sort(key=lambda x: x[1], reverse=True)
+
+    # Truncate largest fields until output fits
+    out = dict(result)
+    for key, size in trunc_candidates:
+        serialized = json.dumps(out, default=str)
+        if len(serialized) <= max_bytes:
+            break
+        # Estimate how much to cut from this field
+        overshoot = len(serialized) - max_bytes
+        field_val = out[key]
+        new_len = max(0, len(field_val) - overshoot - 200)  # extra margin for metadata
+        out[key] = field_val[:new_len] + f"... [truncated from {len(field_val)} chars]"
+        truncated_fields.append(key)
+
+    out["truncated"] = True
+    out["truncated_fields"] = truncated_fields
+    out["original_bytes"] = original_bytes
+    return out
+
+
+async def handle_http(request: web.Request) -> web.Response:
+    """HTTP request handler."""
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, web.HTTPBadRequest) as e:
+        return web.json_response(
+            {"success": False, "error": f"Invalid JSON: {e}"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+    except Exception as e:
+        # Catches aiohttp ContentTypeError and other unexpected parse errors
+        return web.json_response(
+            {"success": False, "error": f"Request parse error: {e}"},
+            status=HTTPStatus.BAD_REQUEST,
+        )
+
+    try:
+        result = await handle_request_inner(body)
+    except Exception as e:
+        result = {"success": False, "error": f"Unhandled error: {e}"}
+
+    # Truncate oversized responses
+    output = json.dumps(result, default=str)
+    if len(output) > Config.MAX_SNAPSHOT_BYTES:
+        result = _truncate_result(result, len(output))
+        # Re-check after truncation — nested data (refs, etc.) may keep it over limit
+        output = json.dumps(result, default=str)
+        if len(output) > Config.MAX_SNAPSHOT_BYTES:
+            result = {
+                "success": result.get("success", False),
+                "error": result.get("error", ""),
+                "truncated": True,
+                "original_bytes": len(output),
+                "message": "Response exceeded size limit even after field truncation. "
+                           "Use a more targeted request to reduce output size.",
+            }
+
+    return web.json_response(result)
+
+
+async def handle_health(request: web.Request) -> web.Response:
+    """Health check endpoint."""
+    import browser_engine
+    sessions = await browser_engine.list_sessions()
+    return web.json_response({
+        "status": "ok",
+        "active_sessions": len(sessions),
+    })
+
+
+async def _session_sweeper(app: web.Application) -> None:
+    """Periodic background task that reaps idle sessions."""
+    import browser_engine
+
+    interval = Config.SESSION_SWEEP_INTERVAL
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                reaped = await browser_engine.sweep_idle_sessions()
+                if reaped:
+                    print(f"[gc] reaped {len(reaped)} idle session(s): {reaped}",
+                          file=sys.stderr)
+            except Exception as e:
+                print(f"[gc] sweep error: {e}", file=sys.stderr)
+    except asyncio.CancelledError:
+        pass
+
+
+async def on_startup(app: web.Application) -> None:
+    """Start background tasks on server startup."""
+    app["sweeper_task"] = asyncio.create_task(_session_sweeper(app))
+
+
+async def cleanup(app: web.Application) -> None:
+    """Clean up all browser sessions on shutdown."""
+    # Stop the sweeper first
+    sweeper = app.get("sweeper_task")
+    if sweeper:
+        sweeper.cancel()
+        try:
+            await sweeper
+        except asyncio.CancelledError:
+            pass
+
+    import browser_engine
+    sessions = await browser_engine.list_sessions()
+    for s in sessions:
+        try:
+            await browser_engine.close(s["session_id"])
+        except Exception:
+            pass
+
+
+def main():
+    parser = argparse.ArgumentParser(description="browser-use HTTP server")
+    parser.add_argument("--port", type=int, default=8500, help="Port (default: 8500)")
+    parser.add_argument("--host", default=Config.DEFAULT_HOST,
+                        help=f"Host (default: {Config.DEFAULT_HOST})")
+    args = parser.parse_args()
+
+    Config.ensure_dirs()
+
+    app = web.Application(middlewares=[auth_middleware])
+    app.router.add_post("/", handle_http)
+    app.router.add_get("/health", handle_health)
+    app.on_startup.append(on_startup)
+    app.on_cleanup.append(cleanup)
+
+    auth_status = "enabled (token set)" if Config.AUTH_TOKEN else "disabled (no BROWSER_USE_TOKEN)"
+    print(f"browser-use server starting on {args.host}:{args.port} [auth: {auth_status}]",
+          file=sys.stderr)
+    web.run_app(app, host=args.host, port=args.port, print=None)
+
+
+if __name__ == "__main__":
+    main()
