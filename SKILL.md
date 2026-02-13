@@ -223,10 +223,15 @@ Phase 1 supports Tier 1 only. Auto-escalation comes in Phase 2.
 
 ## Dependencies
 
+**Required:**
 - Python 3.10+
 - playwright (`pip install playwright && playwright install chromium`)
 - pydantic v2 (`pip install pydantic>=2.0`)
 - aiohttp (`pip install aiohttp`)
+
+**Optional (Phase 2 — stealth tiers, not yet implemented):**
+- patchright — Tier 2: patched Playwright with stealth (`pip install patchright`)
+- camoufox — Tier 3: anti-detect Firefox with fingerprint spoofing (`pip install camoufox`)
 
 ## Do NOT Use For
 
