@@ -132,7 +132,14 @@ async def action_click(page, params: dict, session: dict) -> dict:
     try:
         if session.get("humanize"):
             hb = HumanBehavior(intensity=session.get("humanize_intensity", 1.0))
-            await hb.move_to_element(page, locator, click=True)
+            try:
+                await asyncio.wait_for(
+                    hb.move_to_element(page, locator, click=True),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                # Humanize timed out — fall back to plain click
+                await locator.click(timeout=10_000)
         else:
             await locator.click(timeout=10_000)
     except Exception as e:
@@ -213,7 +220,15 @@ async def action_type(page, params: dict, session: dict) -> dict:
     try:
         if session.get("humanize"):
             hb = HumanBehavior(intensity=session.get("humanize_intensity", 1.0))
-            await hb.human_type(page, locator, text, clear_first=False)
+            try:
+                await asyncio.wait_for(
+                    hb.human_type(page, locator, text, clear_first=False),
+                    timeout=max(15.0, len(text) * 0.2),
+                )
+            except asyncio.TimeoutError:
+                # Humanize timed out — fall back to plain typing
+                await locator.click(timeout=5_000)
+                await locator.press_sequentially(text, delay=delay, timeout=10_000)
         else:
             await locator.press_sequentially(text, delay=delay, timeout=10_000)
         return {
@@ -311,9 +326,23 @@ async def action_evaluate(page, params: dict, session: dict) -> dict:
     if not js:
         return {"success": False, "error": "Missing required param: js"}
 
+    frame_url = params.get("frame_url", "")
     timeout_s = params.get("timeout_s", 30)
     try:
-        result = await asyncio.wait_for(page.evaluate(js), timeout=timeout_s)
+        target = page
+        if frame_url:
+            # Find matching frame by URL substring
+            for frame in page.frames:
+                if frame_url in frame.url:
+                    target = frame
+                    break
+            else:
+                return {
+                    "success": False,
+                    "error": f"No frame matching '{frame_url}' found. "
+                    f"Frames: {[f.url[:80] for f in page.frames]}",
+                }
+        result = await asyncio.wait_for(target.evaluate(js), timeout=timeout_s)
         # Serialize result safely
         if result is None:
             content = "null"

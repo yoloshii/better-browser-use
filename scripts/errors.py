@@ -242,7 +242,7 @@ _PATTERN_MAP: list[tuple[str, str, object]] = [
         lambda e: "Site returned HTTP 429 (Too Many Requests). Slow down.",
     ),
     (
-        "captcha",
+        "captcha challenge",
         "CAPTCHA_DETECTED",
         lambda e: "CAPTCHA detected on the page.",
     ),

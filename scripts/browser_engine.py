@@ -186,7 +186,7 @@ class Tier1Playwright(BrowserTier):
         viewport: dict | None = None,
         **kwargs: Any,
     ) -> tuple[Any, Any, Any]:
-        _ensure_playwright_chromium()
+        # _ensure_playwright_chromium()  # Skip — already installed, blocks event loop
         from playwright.async_api import async_playwright
 
         geo = get_geo_config()
@@ -253,7 +253,7 @@ class Tier2Patchright(BrowserTier):
         viewport: dict | None = None,
         **kwargs: Any,
     ) -> tuple[Any, Any, Any]:
-        _ensure_patchright()
+        # _ensure_patchright()  # Skip — already installed, blocks event loop
         from patchright.async_api import async_playwright
 
         geo = get_geo_config()
@@ -520,7 +520,7 @@ async def launch(
         "last_activity": time.monotonic(),
         "action_count": 0,
         "ref_map": {},
-        "humanize": Config.HUMANIZE_ACTIONS or tier >= 2,
+        "humanize": Config.HUMANIZE_ACTIONS,  # Disabled auto-humanize for Tier 2 (timeout issues)
         "humanize_intensity": Config.DEFAULT_HUMANIZE,
     }
 
