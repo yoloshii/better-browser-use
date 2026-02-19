@@ -85,9 +85,12 @@ time[datetime]                       # Timestamp
 
 ### For browser-use skill
 - Use `evaluate` action with the selectors above instead of snapshot→click loops
+- `search_page` for quick text matching without full snapshot overhead
+- `extract` for full page markdown when evaluate selectors miss dynamic content
+- `wait` with `text` or `selector` param to detect content load before extracting
 - Launch with `profile: "x-primary"` for warm session with cached auth
+- `cookies_export`/`cookies_import` as lightweight alternative to full profile save/restore
 - Tab management maps to `tab_new`/`tab_switch` actions
-- CDP mode is Phase 2 (current Tier 1 uses Playwright, not CDP)
 
 ---
 
