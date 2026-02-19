@@ -36,7 +36,14 @@ git clone https://github.com/yoloshii/better-browser-use.git
 cd better-browser-use
 pip install 'pyee>=13,<14'
 pip install 'playwright>=1.51,<1.56' && playwright install chromium
-pip install aiohttp 'pydantic>=2.0' markdownify
+pip install aiohttp 'pydantic>=2.0' markdownify python-dotenv
+```
+
+### Configure (optional)
+
+```bash
+cp .env.example .env
+# Edit .env with your auth token, proxy, CAPTCHA solver keys, etc.
 ```
 
 ### Start Server
@@ -395,6 +402,7 @@ scripts/
 - pydantic v2 (`pip install 'pydantic>=2.0'`)
 - aiohttp (`pip install aiohttp`)
 - markdownify (`pip install markdownify`)
+- python-dotenv (`pip install python-dotenv`) — optional, auto-loads `.env` file
 
 **Tier 1 — Playwright (Chromium):**
 - `pip install 'playwright>=1.51,<1.56' && playwright install chromium`
@@ -413,7 +421,7 @@ scripts/
 pip install 'pyee>=13,<14'
 pip install 'playwright>=1.51,<1.56' && playwright install chromium
 pip install patchright && patchright install chromium
-pip install aiohttp 'pydantic>=2.0' markdownify
+pip install aiohttp 'pydantic>=2.0' markdownify python-dotenv
 ```
 
 All tiers auto-install their browser binaries on first use.

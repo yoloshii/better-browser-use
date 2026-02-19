@@ -403,6 +403,7 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 - aiohttp (`pip install aiohttp`) — HTTP server
 - markdownify (`pip install markdownify`) — HTML→Markdown for `extract` action
 - pyee 13.x (`pip install 'pyee>=13,<14'`) — shared event emitter for Playwright + Patchright
+- python-dotenv (`pip install python-dotenv`) — optional, auto-loads `.env` file
 
 **Tier 1 — Playwright (Chromium):**
 - playwright 1.51.x (`pip install 'playwright>=1.51,<1.56' && playwright install chromium`)
@@ -423,7 +424,7 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 pip install 'pyee>=13,<14'
 pip install 'playwright>=1.51,<1.56' && playwright install chromium
 pip install patchright && patchright install chromium
-pip install aiohttp 'pydantic>=2.0' markdownify
+pip install aiohttp 'pydantic>=2.0' markdownify python-dotenv
 ```
 
 All tiers auto-install their browser binaries on first use if not already present.

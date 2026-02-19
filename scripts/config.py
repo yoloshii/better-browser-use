@@ -5,6 +5,13 @@ import re
 from pathlib import Path
 from typing import Any
 
+# Load .env file if present (python-dotenv optional — works without it)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
+
 # Disable Playwright's document.fonts.ready wait before screenshots.
 # Prevents indefinite hang in headless Chromium on WSL2/CI (playwright#28995).
 os.environ.setdefault("PW_TEST_SCREENSHOT_NO_FONTS_READY", "1")
