@@ -146,7 +146,7 @@ curl -s -X POST http://127.0.0.1:8500/ -H 'Content-Type: application/json' \
 
 ## Dependencies
 
-Core: `aiohttp`, `pydantic>=2.0`, `markdownify`, `pyee>=13,<14`
+Core: `aiohttp`, `pydantic>=2.0`, `markdownify`, `pyee>=13,<14`, `python-dotenv`
 Tier 1: `playwright>=1.51,<1.56` + chromium (avoid 1.56+ WSL2 regression)
 Tier 2: `patchright` + chromium (requires pyee>=13)
 Tier 3: `camoufox[geoip]` + `playwright`
