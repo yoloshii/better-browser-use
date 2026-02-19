@@ -254,6 +254,16 @@ When detected, the response includes:
 
 The agent can then escalate to a higher stealth tier.
 
+### Optional CAPTCHA Solving
+
+When CAPTCHA or Cloudflare challenge is detected and solver API keys are configured, the server auto-solves inline. You can also trigger solving manually via the `solve_captcha` action.
+
+**Solver tiers** (pay-as-you-go, bring your own keys):
+1. **CapSolver** — AI-based, fast (1-10s). Set `CAPSOLVER_API_KEY`.
+2. **2Captcha** — Human fallback, slower (10-30s), broadest coverage. Set `TWOCAPTCHA_API_KEY`.
+
+Supports reCAPTCHA v2/v3, hCaptcha, and Cloudflare Turnstile. No API keys = feature disabled (no errors).
+
 ## Rate Limiting
 
 Per-domain action rate limits protect against detection:
@@ -266,7 +276,7 @@ Per-domain action rate limits protect against detection:
 | x.com / twitter.com | 6/min |
 | instagram.com | 4/min |
 
-Read-only actions (snapshot, screenshot, cookies_get, search_page, find_elements, extract, get_downloads) are exempt. When rate limited:
+Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox, solve_captcha) are exempt. When rate limited:
 
 ```json
 {"success": false, "code": "RATE_LIMITED", "wait_seconds": 8.2}
@@ -319,6 +329,8 @@ webmcp_discover → webmcp_call searchFlights {origin:"LON", destination:"NYC", 
 | `PROXY_SERVER` | _(empty)_ | Proxy URL for Tier 2/3 (e.g., `http://proxy:8080`) |
 | `PROXY_USERNAME` | _(empty)_ | Proxy auth username |
 | `PROXY_PASSWORD` | _(empty)_ | Proxy auth password |
+| `CAPSOLVER_API_KEY` | _(empty)_ | CapSolver API key for CAPTCHA solving (optional, fast AI) |
+| `TWOCAPTCHA_API_KEY` | _(empty)_ | 2Captcha API key for CAPTCHA solving (optional, human fallback) |
 | `BROWSER_USE_WEBMCP` | `auto` | `auto` = detect, `1` = force Chrome channel, `0` = disable |
 | `BROWSER_USE_CHROME_CHANNEL` | _(empty)_ | Chrome channel: `chrome-dev`, `chrome-beta`, `chrome-canary` |
 | `BROWSER_USE_CHROME_PATH` | _(empty)_ | Explicit Chrome binary path (overrides channel) |
