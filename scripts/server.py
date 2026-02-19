@@ -153,14 +153,45 @@ async def handle_request_inner(request_data: dict) -> dict:
             session_ctx = {
                 "session_id": session_id,
                 "ref_map": ref_map,
+                "tier": session_data.get("tier", 1),
                 "humanize": session_data.get("humanize", False),
                 "humanize_intensity": humanize_intensity,
+                "webmcp_available": session_data.get("webmcp_available"),
+                "webmcp_tools": session_data.get("webmcp_tools", {}),
+                "downloads": session_data.get("downloads", []),
             }
 
+            old_url = page.url
             result = await actions.execute_action(page, action_name, params, session_ctx)
 
             # Increment action counter
             session_data["action_count"] = session_data.get("action_count", 0) + 1
+
+            # Loop detection (skip read-only actions)
+            _loop_skip = {"snapshot", "screenshot", "done", "wait", "search_page",
+                          "find_elements", "extract", "get_downloads"}
+            loop_detector = session_data.get("loop_detector")
+            if loop_detector and action_name not in _loop_skip:
+                from models import PageFingerprint
+                fingerprint = None
+                current_refs = session_ctx.get("ref_map") or browser_engine.get_session_ref_map(session_id)
+                if current_refs:
+                    fingerprint = PageFingerprint.from_snapshot(
+                        url=page.url,
+                        refs=current_refs,
+                        tab_count=len(page.context.pages),
+                    )
+                warning = loop_detector.record(action_name, params, fingerprint)
+                if warning:
+                    result["loop_warning"] = warning
+
+            # Reset loop detector on cross-domain navigation
+            if result.get("page_changed") and loop_detector:
+                from urllib.parse import urlparse as _urlp
+                old_domain = _urlp(old_url).netloc
+                new_domain = _urlp(page.url).netloc
+                if old_domain != new_domain:
+                    loop_detector.reset()
 
             # Record rate-limit usage only after successful action execution
             if action_name not in EXEMPT_ACTIONS and result.get("success", False):
@@ -204,16 +235,45 @@ async def handle_request_inner(request_data: dict) -> dict:
             if page is None:
                 return {"success": False, "error": f"Session {session_id} not found or expired"}
 
+            # Pass WebMCP tools to snapshot for header display
+            session_data = browser_engine._sessions.get(session_id, {})
+            webmcp_tools = session_data.get("webmcp_tools") or None
+
             result = await take_snapshot(
                 page,
                 compact=request_data.get("compact", True),
                 max_depth=request_data.get("max_depth", 10),
                 cursor_interactive=request_data.get("cursor_interactive", True),
+                webmcp_tools=webmcp_tools,
+                session_id=session_id,
             )
 
             # Persist ref_map to session state for subsequent actions
             if result.get("success") and "refs" in result:
                 browser_engine.set_session_ref_map(session_id, result["refs"])
+
+            # Surface dismissed popups and downloads in snapshot header
+            if result.get("success"):
+                extra_header = ""
+                dismissed = session_data.get("dismissed_popups", [])
+                if dismissed:
+                    recent = dismissed[-3:]
+                    popup_lines = [
+                        f"  [{p['type']}] {p['message'][:80]} -> {p['action']}"
+                        for p in recent
+                    ]
+                    extra_header += "Dismissed popups:\n" + "\n".join(popup_lines) + "\n\n"
+
+                downloads = session_data.get("downloads", [])
+                if downloads:
+                    dl_lines = [
+                        f"  {d['filename']} ({d['size']} bytes)"
+                        for d in downloads[-5:]
+                    ]
+                    extra_header += "Downloaded files:\n" + "\n".join(dl_lines) + "\n\n"
+
+                if extra_header:
+                    result["tree"] = extra_header + result["tree"]
 
             return result
 
@@ -232,18 +292,52 @@ async def handle_request_inner(request_data: dict) -> dict:
             if page is None:
                 return {"success": False, "error": f"Session {session_id} not found or expired"}
 
+            import asyncio as _aio
+            from actions import _firefox_screenshot_fallback
+            full_page = request_data.get("full_page", False)
+
+            # Tier 1: Playwright native
+            data = None
             try:
-                data = await page.screenshot(
-                    full_page=request_data.get("full_page", False),
-                    type="png",
-                )
-                return {
-                    "success": True,
-                    "screenshot": base64.b64encode(data).decode("ascii"),
-                    "size": len(data),
-                }
-            except Exception as e:
-                return {"success": False, "error": str(e)}
+                data = await page.screenshot(full_page=full_page, type="png", timeout=15000)
+            except Exception:
+                pass
+
+            # Tier 2: CDP with optimizeForSpeed
+            if data is None:
+                try:
+                    async def _cdp_shot():
+                        context = page.context
+                        cdp = await context.new_cdp_session(page)
+                        try:
+                            await cdp.send("Emulation.setFocusEmulationEnabled", {"enabled": False})
+                        except Exception:
+                            pass
+                        cdp_params = {"format": "png", "optimizeForSpeed": True}
+                        if full_page:
+                            cdp_params["captureBeyondViewport"] = True
+                        result = await cdp.send("Page.captureScreenshot", cdp_params)
+                        await cdp.detach()
+                        return base64.b64decode(result["data"])
+                    data = await _aio.wait_for(_cdp_shot(), timeout=10.0)
+                except Exception:
+                    pass
+
+            # Tier 3: Firefox fallback (skip if session is already Firefox)
+            if data is None:
+                session_data = browser_engine._sessions.get(session_id, {})
+                tier = session_data.get("tier", 1)
+                if tier in (1, 2):
+                    data = await _firefox_screenshot_fallback(page.url, full_page)
+
+            if data is None:
+                return {"success": False, "error": "Screenshot failed: Playwright, CDP, and Firefox fallback all timed out"}
+
+            return {
+                "success": True,
+                "screenshot": base64.b64encode(data).decode("ascii"),
+                "size": len(data),
+            }
 
         return await _with_session_lock(session_id, _do_screenshot)
 

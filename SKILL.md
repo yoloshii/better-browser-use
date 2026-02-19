@@ -1,6 +1,6 @@
 ---
 name: browser-use
-description: Agentic browser automation with persistent sessions and ARIA snapshot-based navigation. Use when user needs to browse websites, interact with web pages, fill forms, login to sites, warm up social accounts, bypass anti-bot protection, take screenshots, execute JavaScript on pages, manage cookies, handle multi-tab workflows, or perform any multi-step browser task. Three stealth tiers (Playwright, Patchright, Camoufox) with auto-escalation for anti-bot, session persistence with cookie/storage profiles, element ref system, context compaction for long sessions, idle session GC, and per-session locking.
+description: Agentic browser automation with persistent sessions and ARIA snapshot-based navigation. Use when user needs to browse websites, interact with web pages, fill forms, login to sites, warm up social accounts, bypass anti-bot protection, take screenshots, execute JavaScript on pages, manage cookies, handle multi-tab workflows, extract page content as Markdown, search page text, find elements by role or text, upload files, download files, use WebMCP structured tools on Chrome 146+ pages, or perform any multi-step browser task. Three stealth tiers (Playwright, Patchright, Camoufox) with auto-escalation for anti-bot, session persistence with cookie/storage profiles, element ref system, WebMCP tool discovery, new-element detection between snapshots, action loop detection with escalating warnings, auto popup dismissal, download handling, click-by-coordinate fallback, context compaction for long sessions, idle session GC, and per-session locking.
 allowed-tools: Bash(curl*), Bash(python*), Bash(pkill*), Read
 triggers:
   - browse
@@ -19,6 +19,14 @@ triggers:
   - manage cookies
   - stealth browser
   - anti-detect
+  - extract page content
+  - page to markdown
+  - search page text
+  - find element
+  - upload file
+  - download file
+  - webmcp
+  - structured tools
 ---
 
 # Browser-Use Skill
@@ -74,12 +82,20 @@ Idle sessions auto-reaped after TTL (default: 1 hour).
 
 1. **Launch** session (optionally with profile)
 2. **Navigate** to target URL
-3. **Snapshot** — get ARIA tree with refs (@e1, @e2, ...)
-4. **Reason** — analyze tree, decide action(s)
-5. **Act** — execute using refs
-6. **Observe** — check result, re-snapshot if page changed
-7. **Repeat** 4-6 until done
-8. **Save** state and **close**
+3. **WebMCP Discover** (optional) — `{"op":"action","action":"webmcp_discover"}` to probe for structured tools
+4. **If WebMCP tools found:**
+   - Read tool schemas (names, descriptions, inputSchema)
+   - **Prefer `webmcp_call`** for form submissions and structured actions
+   - Fall back to ARIA for non-tool interactions (scrolling, reading, navigation)
+5. **If no WebMCP tools (standard path):**
+   - **Snapshot** — get ARIA tree with refs (@e1, @e2, ...)
+   - **Reason** — analyze tree, decide action(s)
+   - **Act** — execute using refs
+   - **Observe** — check result, re-snapshot if page changed
+6. **Repeat** until done
+7. **Save** state and **close**
+
+After navigating to a new page, re-run `webmcp_discover` (tools change per page).
 
 ## Operations
 
@@ -166,6 +182,61 @@ Returns: `{success, screenshot}` (base64 PNG)
 | `tab_switch` | `{index}` | Switch tab (0-based) |
 | `tab_close` | `{index}` | Close tab |
 
+### WebMCP (Chrome 146+)
+| Action | Params | Description |
+|--------|--------|-------------|
+| `webmcp_discover` | `{}` | Probe page for WebMCP tools (imperative + declarative). Run after navigate. |
+| `webmcp_call` | `{tool, args}` | Call a WebMCP tool with structured arguments |
+
+WebMCP tools appear in snapshot headers after discovery. Use `webmcp_call` instead of fill/click/snapshot cycles when tools are available.
+
+### Search & Discovery
+| Action | Params | Description |
+|--------|--------|-------------|
+| `search_page` | `{query, max_results?}` | Text search across visible page content. Case-insensitive. Read-only, no rate limit. |
+| `find_elements` | `{text?, role?}` | Find refs matching criteria in current snapshot. At least one param required. Read-only. |
+| `extract` | `{max_chars?, include_links?}` | Full page to markdown. Use when ARIA tree lacks detail. Read-only but expensive. |
+
+### File & Coordinate
+| Action | Params | Description |
+|--------|--------|-------------|
+| `upload_file` | `{ref, path}` | Upload file to input[type=file] near ref |
+| `get_downloads` | `{}` | List files downloaded in this session. Read-only. |
+| `click_coordinate` | `{x, y}` | Click at viewport coordinates. Last resort for non-ARIA elements. |
+
+### Agent Guidance
+
+**Action cost**: `search_page`, `find_elements`, `get_downloads` are free (read-only, no rate limit). `extract` is expensive (full page parse). Page-changing actions (`navigate`, `click`, `fill`, `upload_file`, `click_coordinate`) count toward rate limits.
+
+**Action chaining**: Put page-changing actions last. Safe to chain read-only actions before them.
+
+**New element detection**: Elements new since last snapshot are prefixed with `*` in the ARIA tree:
+```
+- button "Submit" @e1
+*- button "Confirm" @e2     <-- NEW since last snapshot
+- textbox "Email" @e3
+```
+New elements often appear after form interactions. Interact with them when relevant.
+
+**Loop detection**: The server detects repetitive action patterns. If you receive a `loop_warning` in the response:
+- **WARNING**: 3+ repetitions on same page — try a different approach
+- **STUCK**: 5+ repetitions — navigate elsewhere or use `evaluate` to inspect DOM
+- **CRITICAL**: 7+ repetitions — call `done` immediately with partial results
+
+**Pre-done verification**: Always verify task completion before calling `done`. Take a final snapshot to confirm expected state.
+
+## Auto Popup Dismissal
+
+JavaScript dialogs (alert, confirm, prompt) are automatically handled:
+- `alert` / `confirm` / `beforeunload`: Accepted (OK)
+- `prompt`: Dismissed (Cancel)
+
+Dismissed popup messages appear in the next snapshot header. No action needed from the agent.
+
+## Download Handling
+
+File downloads are auto-saved to a session temp directory. Check downloads via `get_downloads` action. Downloaded file info appears in snapshot headers when files are available.
+
 ## Ref System
 
 - Refs assigned sequentially: `@e1`, `@e2`, `@e3`, ...
@@ -215,7 +286,7 @@ Server enforces per-domain action rate limits (from `Config.SENSITIVE_RATE_LIMIT
 | x.com / twitter.com | 6/min |
 | instagram.com | 4/min |
 
-Read-only actions (snapshot, screenshot, cookies_get) are exempt.
+Read-only actions (snapshot, screenshot, cookies_get, search_page, find_elements, extract, get_downloads) are exempt.
 If rate limited, response includes `{"code": "RATE_LIMITED", "wait_seconds": N}`.
 
 ## Block Detection
@@ -251,21 +322,21 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| Server | `scripts/server.py` | aiohttp HTTP server, auth, request routing, rate limiting, block detection |
+| Server | `scripts/server.py` | aiohttp HTTP server, auth, request routing, rate limiting, block detection, loop detection |
 | Agent | `scripts/agent.py` | stdin/stdout JSON interface (alternative to server) |
-| Browser Engine | `scripts/browser_engine.py` | Multi-tier browser lifecycle, tracker blocking, session management, idle GC |
-| Actions | `scripts/actions.py` | Action dispatcher (18 actions) with humanization layer |
+| Browser Engine | `scripts/browser_engine.py` | Multi-tier browser lifecycle, tracker blocking, WebMCP init, popup/download handlers, session management, idle GC |
+| Actions | `scripts/actions.py` | Action dispatcher (25 actions) with humanization layer |
 | Behavior | `scripts/behavior.py` | Bezier mouse curves, Gaussian typing delays, eased scrolling |
 | Detection | `scripts/detection.py` | Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX), site profiles |
 | Fingerprint | `scripts/fingerprint.py` | SQLite-backed fingerprint persistence per domain, rotation on block rate |
 | Rate Limiter | `scripts/rate_limiter.py` | Per-domain sliding window rate limiter |
-| Snapshot | `scripts/snapshot.py` | ARIA tree parser, ref assignment |
+| Snapshot | `scripts/snapshot.py` | ARIA tree parser, ref assignment, new-element detection |
 | Session | `scripts/session.py` | Profile persistence (cookies/storage/fingerprints), path-safe naming |
 | FSM | `scripts/agent_fsm.py` | State machine for agent loop |
 | Compaction | `scripts/context_compaction.py` | LLM history summarization |
 | Errors | `scripts/errors.py` | Error classification with AI-friendly transforms |
 | Config | `scripts/config.py` | Settings, geo profiles, env vars |
-| Models | `scripts/models.py` | Pydantic v2 type definitions |
+| Models | `scripts/models.py` | Pydantic v2 type definitions, loop detection, page fingerprinting |
 
 ## Configuration
 
@@ -278,6 +349,9 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | `PROXY_SERVER` | (empty) | Proxy URL (e.g., `http://proxy:8080`). Used by Tier 2/3. |
 | `PROXY_USERNAME` | (empty) | Proxy auth username |
 | `PROXY_PASSWORD` | (empty) | Proxy auth password |
+| `BROWSER_USE_WEBMCP` | `auto` | `auto` = detect, `1` = force Chrome channel, `0` = disable |
+| `BROWSER_USE_CHROME_CHANNEL` | (empty) | Chrome channel: `chrome-dev`, `chrome-beta`, `chrome-canary`, `chrome` |
+| `BROWSER_USE_CHROME_PATH` | (empty) | Explicit Chrome binary path (overrides channel) |
 
 ### Geo Profiles
 
@@ -302,20 +376,67 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 - Python 3.10+
 - pydantic v2 (`pip install pydantic>=2.0`) — request/response models
 - aiohttp (`pip install aiohttp`) — HTTP server
+- markdownify (`pip install markdownify`) — HTML→Markdown for `extract` action
+- pyee 13.x (`pip install 'pyee>=13,<14'`) — shared event emitter for Playwright + Patchright
 
 **Tier 1 — Playwright (Chromium):**
-- playwright (`pip install playwright && playwright install chromium`)
+- playwright 1.51.x (`pip install 'playwright>=1.51,<1.56' && playwright install chromium`)
+- Avoid 1.56+ (WSL2 regression: `new_page()` hangs in headless mode)
 
 **Tier 2 — Patchright (stealth Chromium):**
 - patchright (`pip install patchright && patchright install chromium`)
 - Patched Playwright fork with stealth defaults (no `navigator.webdriver` leak, isolated JS eval)
+- Requires pyee>=13 — install pyee 13.x before playwright to satisfy both
 
 **Tier 3 — Camoufox (anti-detect Firefox):**
 - camoufox (`pip install camoufox[geoip] && python -m camoufox fetch`)
-- playwright (`pip install playwright`) — Camoufox uses Playwright Firefox protocol
+- playwright (`pip install 'playwright>=1.51,<1.56'`) — Camoufox uses Playwright Firefox protocol
 - browserforge (installed with camoufox) — statistical fingerprint generation
 
-All tiers auto-install their dependencies on first use if not already present.
+**Install order** (to avoid pyee conflicts):
+```bash
+pip install 'pyee>=13,<14'
+pip install 'playwright>=1.51,<1.56' && playwright install chromium
+pip install patchright && patchright install chromium
+pip install aiohttp 'pydantic>=2.0' markdownify
+```
+
+All tiers auto-install their browser binaries on first use if not already present.
+
+## WebMCP Integration
+
+WebMCP is a Chrome 146+ web standard that lets pages expose structured tools for AI agents. When available, it replaces guesswork-based form filling with explicit contracts.
+
+### Requirements
+- Chrome Dev (146+), Beta, or Canary installed on the host
+- Set `BROWSER_USE_CHROME_CHANNEL=chrome-beta` (or `chrome-dev`, `chrome-canary`)
+- Or set `BROWSER_USE_CHROME_PATH=/path/to/chrome` for explicit binary
+- Set `BROWSER_USE_WEBMCP=1` to force WebMCP mode, or leave as `auto` (default)
+
+### How It Works
+1. On session launch, an init script intercepts `navigator.modelContext.registerTool()` calls
+2. `webmcp_discover` reads captured tools + scans `<form toolname>` elements
+3. `webmcp_call` invokes tool.execute() (imperative) or fills+submits form (declarative)
+4. Discovered tools appear in subsequent snapshot headers
+
+### Example: WebMCP vs ARIA
+```
+# Without WebMCP (6+ requests):
+snapshot → see @e1-@e6 → fill @e1 "LON" → fill @e2 "NYC" → fill @e3 "2026-06-10" → click @e7 → snapshot
+
+# With WebMCP (2 requests):
+webmcp_discover → webmcp_call searchFlights {origin:"LON", destination:"NYC", outboundDate:"2026-06-10"}
+```
+
+### When WebMCP Helps
+- Form-heavy pages (booking, registration, search)
+- Pages with complex input schemas (dropdowns, date pickers, multi-step forms)
+- Sites that explicitly declare tool contracts
+
+### When WebMCP Won't Help
+- Anti-bot sites (they won't implement WebMCP)
+- Content reading / scrolling / navigation
+- Sites without WebMCP adoption (most of the web, for now)
 
 ## Do NOT Use For
 

@@ -5,6 +5,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+# Disable Playwright's document.fonts.ready wait before screenshots.
+# Prevents indefinite hang in headless Chromium on WSL2/CI (playwright#28995).
+os.environ.setdefault("PW_TEST_SCREENSHOT_NO_FONTS_READY", "1")
+
 
 # Strict profile name regex: alphanumeric, dots, dashes, underscores only
 PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
@@ -111,6 +115,14 @@ class Config:
 
     # Geo profile — timezone/locale correlation for stealth
     GEO = os.getenv("BROWSER_USE_GEO", "")
+
+    # WebMCP — structured tool discovery on Chrome 146+ pages
+    # "auto" = detect at runtime, "1" = force Chrome channel + flag, "0" = disable
+    WEBMCP_ENABLED = os.getenv("BROWSER_USE_WEBMCP", "auto")
+    # Chrome channel for WebMCP ("chrome-dev", "chrome-beta", "chrome-canary", "chrome")
+    CHROME_CHANNEL = os.getenv("BROWSER_USE_CHROME_CHANNEL", "")
+    # Explicit Chrome executable path (overrides CHROME_CHANNEL)
+    CHROME_EXECUTABLE = os.getenv("BROWSER_USE_CHROME_PATH", "")
 
     @classmethod
     def ensure_dirs(cls) -> None:

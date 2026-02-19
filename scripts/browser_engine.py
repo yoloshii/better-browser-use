@@ -109,6 +109,219 @@ TRACKER_PATTERNS: list[str] = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# WebMCP init script — intercepts tool registrations on Chrome 146+ pages
+# ---------------------------------------------------------------------------
+
+WEBMCP_INIT_SCRIPT = """
+(() => {
+    // Initialize WebMCP interception layer
+    window.__webmcp = { tools: {}, available: false, declarative: {} };
+
+    if (typeof navigator.modelContext === 'undefined') return;
+
+    window.__webmcp.available = true;
+
+    // --- Intercept imperative tool registrations ---
+
+    const origRegister = navigator.modelContext.registerTool.bind(navigator.modelContext);
+    navigator.modelContext.registerTool = function(tool) {
+        window.__webmcp.tools[tool.name] = {
+            name: tool.name,
+            description: tool.description || '',
+            inputSchema: tool.inputSchema || {},
+            annotations: tool.annotations || {},
+            _hasExecute: typeof tool.execute === 'function',
+            _ref: tool,  // keep live reference for execute()
+        };
+        return origRegister(tool);
+    };
+
+    const origProvide = navigator.modelContext.provideContext.bind(navigator.modelContext);
+    navigator.modelContext.provideContext = function(options) {
+        // provideContext replaces entire tool set
+        window.__webmcp.tools = {};
+        for (const tool of (options?.tools || [])) {
+            window.__webmcp.tools[tool.name] = {
+                name: tool.name,
+                description: tool.description || '',
+                inputSchema: tool.inputSchema || {},
+                annotations: tool.annotations || {},
+                _hasExecute: typeof tool.execute === 'function',
+                _ref: tool,
+            };
+        }
+        return origProvide(options);
+    };
+
+    const origUnregister = navigator.modelContext.unregisterTool.bind(navigator.modelContext);
+    navigator.modelContext.unregisterTool = function(name) {
+        delete window.__webmcp.tools[name];
+        return origUnregister(name);
+    };
+
+    const origClear = navigator.modelContext.clearContext.bind(navigator.modelContext);
+    navigator.modelContext.clearContext = function() {
+        window.__webmcp.tools = {};
+        return origClear();
+    };
+
+    // --- Scan declarative tools (forms with toolname attribute) ---
+    // Runs after DOM is ready; re-scanned on webmcp_discover action.
+    const scanDeclarativeForms = () => {
+        window.__webmcp.declarative = {};
+        document.querySelectorAll('form[toolname]').forEach(form => {
+            const name = form.getAttribute('toolname');
+            const desc = form.getAttribute('tooldescription') || '';
+            const autoSubmit = form.hasAttribute('toolautosubmit');
+            const schema = { type: 'object', properties: {}, required: [] };
+
+            form.querySelectorAll('input, select, textarea').forEach(el => {
+                if (el.type === 'submit' || el.type === 'hidden') return;
+                const paramName = el.getAttribute('toolparamtitle') || el.name;
+                if (!paramName) return;
+
+                const paramDesc = el.getAttribute('toolparamdescription')
+                    || el.labels?.[0]?.textContent?.trim()
+                    || el.getAttribute('aria-description') || '';
+
+                let prop = { description: paramDesc };
+
+                if (el.tagName === 'SELECT') {
+                    prop.type = 'string';
+                    prop.enum = [];
+                    prop.oneOf = [];
+                    el.querySelectorAll('option').forEach(opt => {
+                        if (opt.value) {
+                            prop.enum.push(opt.value);
+                            prop.oneOf.push({ const: opt.value, title: opt.textContent.trim() });
+                        }
+                    });
+                } else if (el.type === 'checkbox') {
+                    prop.type = 'boolean';
+                } else if (el.type === 'number' || el.type === 'range') {
+                    prop.type = 'number';
+                } else if (el.type === 'radio') {
+                    // Radio groups share a name — collect all values
+                    if (!schema.properties[paramName]) {
+                        prop.type = 'string';
+                        prop.enum = [];
+                    } else {
+                        prop = schema.properties[paramName];
+                    }
+                    if (el.value && !prop.enum.includes(el.value)) {
+                        prop.enum.push(el.value);
+                    }
+                } else {
+                    prop.type = 'string';
+                }
+
+                schema.properties[paramName] = prop;
+                if (el.required && !schema.required.includes(paramName)) {
+                    schema.required.push(paramName);
+                }
+            });
+
+            window.__webmcp.declarative[name] = {
+                name: name,
+                description: desc,
+                inputSchema: schema,
+                autoSubmit: autoSubmit,
+                _formSelector: form.id ? '#' + CSS.escape(form.id)
+                    : 'form[toolname="' + CSS.escape(name) + '"]',
+                _type: 'declarative',
+            };
+        });
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', scanDeclarativeForms);
+    } else {
+        scanDeclarativeForms();
+    }
+
+    // Expose rescan for webmcp_discover
+    window.__webmcp.rescanDeclarative = scanDeclarativeForms;
+
+    // --- Expose execute helper ---
+    window.__webmcp.executeTool = async (name, args) => {
+        // Try imperative first
+        const imp = window.__webmcp.tools[name];
+        if (imp && imp._ref && typeof imp._ref.execute === 'function') {
+            return await imp._ref.execute(args);
+        }
+        // Try declarative (form fill + submit)
+        const decl = window.__webmcp.declarative[name];
+        if (decl) {
+            const form = document.querySelector(decl._formSelector);
+            if (!form) return { error: 'Form not found for declarative tool: ' + name };
+            // Fill fields
+            for (const [key, value] of Object.entries(args || {})) {
+                const el = form.querySelector('[name="' + CSS.escape(key) + '"]')
+                    || form.querySelector('[toolparamtitle="' + CSS.escape(key) + '"]');
+                if (!el) continue;
+                if (el.tagName === 'SELECT') {
+                    el.value = value;
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                } else if (el.type === 'checkbox') {
+                    el.checked = !!value;
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                } else if (el.type === 'radio') {
+                    const radio = form.querySelector(
+                        'input[name="' + CSS.escape(key) + '"][value="' + CSS.escape(String(value)) + '"]'
+                    );
+                    if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change', { bubbles: true })); }
+                } else {
+                    // Set value via native setter to trigger React/framework state updates
+                    const nativeSetter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value'
+                    )?.set || Object.getOwnPropertyDescriptor(
+                        window.HTMLTextAreaElement.prototype, 'value'
+                    )?.set;
+                    if (nativeSetter) nativeSetter.call(el, String(value));
+                    else el.value = String(value);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }
+            // Submit
+            if (decl.autoSubmit || true) {  // always submit for agent calls
+                const submitBtn = form.querySelector('[type="submit"]') || form.querySelector('button:not([type])');
+                if (submitBtn) submitBtn.click();
+                else form.requestSubmit();
+            }
+            return { content: [{ type: 'text', text: 'Form submitted for tool: ' + name }] };
+        }
+        return { error: 'Tool not found: ' + name };
+    };
+})();
+"""
+
+
+async def _inject_webmcp_script(context: Any) -> None:
+    """Inject the WebMCP interceptor init script into a browser context."""
+    await context.add_init_script(WEBMCP_INIT_SCRIPT)
+
+
+def _build_chrome_launch_opts() -> dict[str, Any]:
+    """Build launch options for Chrome with WebMCP flag when enabled."""
+    opts: dict[str, Any] = {}
+
+    if Config.WEBMCP_ENABLED == "0":
+        return opts
+
+    if Config.CHROME_EXECUTABLE:
+        opts["executable_path"] = Config.CHROME_EXECUTABLE
+    elif Config.CHROME_CHANNEL:
+        opts["channel"] = Config.CHROME_CHANNEL
+
+    # Add WebMCP feature flag
+    if Config.CHROME_EXECUTABLE or Config.CHROME_CHANNEL or Config.WEBMCP_ENABLED == "1":
+        opts.setdefault("args", []).append("--enable-features=WebMCPTesting")
+
+    return opts
+
+
 async def _block_trackers(context: Any) -> None:
     """Set up route interception to block tracker/analytics/fingerprinter scripts.
 
@@ -191,7 +404,10 @@ class Tier1Playwright(BrowserTier):
 
         geo = get_geo_config()
         pw = await async_playwright().start()
-        browser = await pw.chromium.launch(headless=Config.HEADLESS)
+
+        launch_opts: dict[str, Any] = {"headless": Config.HEADLESS}
+        launch_opts.update(_build_chrome_launch_opts())
+        browser = await pw.chromium.launch(**launch_opts)
 
         context_opts: dict[str, Any] = {
             "viewport": viewport or Config.DEFAULT_VIEWPORT,
@@ -210,6 +426,11 @@ class Tier1Playwright(BrowserTier):
                 context_opts["storage_state"] = str(storage_path)
 
         context = await browser.new_context(**context_opts)
+
+        # Inject WebMCP interceptor when enabled
+        if Config.WEBMCP_ENABLED != "0":
+            await _inject_webmcp_script(context)
+
         return pw, browser, context
 
     async def teardown(self, handle: Any, browser: Any) -> None:
@@ -258,7 +479,12 @@ class Tier2Patchright(BrowserTier):
 
         geo = get_geo_config()
         pw = await async_playwright().start()
-        browser = await pw.chromium.launch(headless=Config.HEADLESS)
+
+        launch_opts: dict[str, Any] = {"headless": Config.HEADLESS}
+        launch_opts.update(_build_chrome_launch_opts())
+        # Chrome 143+ needs --no-sandbox for DNS resolution in WSL2/containers
+        launch_opts.setdefault("args", []).extend(["--no-sandbox", "--disable-setuid-sandbox"])
+        browser = await pw.chromium.launch(**launch_opts)
 
         context_opts: dict[str, Any] = {
             "viewport": viewport or Config.DEFAULT_VIEWPORT,
@@ -284,6 +510,10 @@ class Tier2Patchright(BrowserTier):
 
         # Block trackers/fingerprinters on stealth tiers
         await _block_trackers(context)
+
+        # Skip add_init_script for Patchright — Chrome 143+ bug: add_init_script
+        # breaks DNS resolution (ERR_NAME_NOT_RESOLVED on all navigations).
+        # WebMCP requires Chrome 146+ anyway, so Patchright sessions won't have it.
 
         return pw, browser, context
 
@@ -459,6 +689,81 @@ def set_session_ref_map(session_id: str, ref_map: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Auto popup dismissal (ported from browser-use PopupsWatchdog)
+# ---------------------------------------------------------------------------
+
+def _setup_popup_handler(context, session_data: dict) -> None:
+    """Register automatic popup/dialog dismissal on a browser context.
+
+    Behavior (matching upstream browser-use):
+    - alert/confirm/beforeunload: accept (OK)
+    - prompt: dismiss (Cancel — can't provide input)
+    """
+    dismissed: list[dict] = []
+    session_data["dismissed_popups"] = dismissed
+
+    async def _on_dialog(dialog):
+        dtype = dialog.type
+        message = dialog.message
+        should_accept = dtype in ("alert", "confirm", "beforeunload")
+        dismissed.append({
+            "type": dtype,
+            "message": message[:200],
+            "action": "accepted" if should_accept else "dismissed",
+        })
+        try:
+            if should_accept:
+                await dialog.accept()
+            else:
+                await dialog.dismiss()
+        except Exception:
+            pass
+
+    context.on("dialog", _on_dialog)
+
+
+# ---------------------------------------------------------------------------
+# Download handling
+# ---------------------------------------------------------------------------
+
+def _setup_download_handler(context, session_data: dict, session_id: str) -> None:
+    """Register automatic download handling for all pages in a context.
+
+    Downloads are auto-saved to a session-scoped temp directory.
+    File metadata is tracked in session_data["downloads"].
+    """
+    import os
+    import tempfile
+
+    download_dir = os.path.join(tempfile.gettempdir(), "browser-use-downloads", session_id)
+    os.makedirs(download_dir, exist_ok=True)
+    session_data["download_dir"] = download_dir
+    downloads_list: list[dict] = []
+    session_data["downloads"] = downloads_list
+
+    async def _on_download(download):
+        try:
+            filename = download.suggested_filename
+            save_path = os.path.join(download_dir, filename)
+            await download.save_as(save_path)
+            size = os.path.getsize(save_path) if os.path.exists(save_path) else 0
+            downloads_list.append({
+                "filename": filename,
+                "path": save_path,
+                "url": download.url,
+                "size": size,
+            })
+            log.info(f"Download saved: {filename} ({size} bytes)")
+        except Exception as exc:
+            log.warning(f"Download save failed: {exc}")
+
+    # Register on all current and future pages
+    for p in context.pages:
+        p.on("download", _on_download)
+    context.on("page", lambda new_page: new_page.on("download", _on_download))
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -507,6 +812,13 @@ async def launch(
 
     page = await context.new_page()
 
+    # Set up auto popup dismissal and download handling
+    _event_data: dict = {}
+    _setup_popup_handler(context, _event_data)
+    _setup_download_handler(context, _event_data, session_id)
+
+    from models import ActionLoopDetector
+
     _sessions[session_id] = {
         "pw": pw,
         "browser": browser,
@@ -522,6 +834,12 @@ async def launch(
         "ref_map": {},
         "humanize": Config.HUMANIZE_ACTIONS,  # Disabled auto-humanize for Tier 2 (timeout issues)
         "humanize_intensity": Config.DEFAULT_HUMANIZE,
+        "webmcp_available": None,  # None=unknown, True/False after probe
+        "webmcp_tools": {},        # tool name -> {name, description, inputSchema, type}
+        "dismissed_popups": _event_data.get("dismissed_popups", []),
+        "downloads": _event_data.get("downloads", []),
+        "download_dir": _event_data.get("download_dir"),
+        "loop_detector": ActionLoopDetector(),
     }
 
     _save_session_meta(session_id, {
@@ -540,12 +858,14 @@ async def launch(
     if url:
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=Config.DEFAULT_TIMEOUT)
-            result["url"] = page.url
-            result["title"] = await page.title()
         except Exception as e:
+            result["warning"] = f"Navigation issue: {e}"
+        try:
             result["url"] = page.url
             result["title"] = await page.title()
-            result["warning"] = f"Navigation issue: {e}"
+        except Exception:
+            result["url"] = getattr(page, "url", url)
+            result["title"] = ""
 
     return result
 
@@ -700,7 +1020,16 @@ async def close(session_id: str) -> dict:
         session["closing"] = False
         return {"success": False, "error": f"Teardown failed: {exc}"}
 
-    # Resources released successfully — now remove session entry
+    # Resources released successfully — now clean up auxiliary state
+    from snapshot import clear_previous_refs
+    clear_previous_refs(session_id)
+
+    # Clean download temp dir
+    download_dir = session.get("download_dir")
+    if download_dir:
+        import shutil
+        shutil.rmtree(download_dir, ignore_errors=True)
+
     _sessions.pop(session_id, None)
 
     sf = _session_file(session_id)

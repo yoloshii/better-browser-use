@@ -15,7 +15,9 @@ from config import Config
 # Actions that don't count toward rate limits (read-only)
 EXEMPT_ACTIONS = frozenset({
     "snapshot", "screenshot", "wait", "done", "evaluate",
-    "cookies_get", "tab_switch", "solve_captcha",
+    "cookies_get", "tab_switch",
+    "webmcp_discover", "webmcp_call",
+    "search_page", "find_elements", "extract", "get_downloads",
 })
 
 

@@ -34,7 +34,7 @@ The agent loop: **snapshot** (observe) → **reason** (decide) → **act** (exec
 ```bash
 git clone https://github.com/yoloshii/better-browser-use.git
 cd better-browser-use
-pip install aiohttp pydantic>=2.0
+pip install aiohttp pydantic>=2.0 markdownify
 pip install playwright && playwright install chromium
 ```
 
@@ -120,6 +120,29 @@ Dependencies auto-install on first use per tier.
 | `cookies_get` | `{domain?}` | Get cookies |
 | `cookies_set` | `{cookies}` | Set cookies |
 
+### Search & Discovery
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `search_page` | `{query, max_results?}` | Text search across visible page content. Case-insensitive. |
+| `find_elements` | `{text?, role?}` | Find refs matching criteria in current snapshot. |
+| `extract` | `{max_chars?, include_links?}` | Full page content as Markdown. |
+
+### WebMCP (Chrome 146+)
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `webmcp_discover` | `{}` | Probe page for structured tools (imperative + declarative forms). |
+| `webmcp_call` | `{tool, args}` | Call a discovered WebMCP tool with structured arguments. |
+
+### File & Coordinate
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `upload_file` | `{ref, path}` | Upload file to `input[type=file]` near ref. |
+| `get_downloads` | `{}` | List files downloaded in this session. |
+| `click_coordinate` | `{x, y}` | Click at viewport coordinates (last resort for non-ARIA elements). |
+
 ## ARIA Snapshots & Refs
 
 Pages are observed through ARIA accessibility trees, not raw HTML. Each interactive element gets a ref (`@e1`, `@e2`, ...):
@@ -142,6 +165,35 @@ Tab 1 of 1
 Use refs in actions: `{"action": "fill", "params": {"ref": "@e2", "value": "user@example.com"}}`.
 
 Refs reset on every new snapshot. If an action returns "ref not found", take a new snapshot.
+
+**New element detection**: Elements that appeared since the previous snapshot are prefixed with `*` in the tree:
+```
+- button "Submit" @e1
+*- button "Confirm" @e2     <-- NEW since last snapshot
+- textbox "Email" @e3
+```
+
+## Loop Detection
+
+The server detects repetitive action patterns and returns escalating warnings:
+
+- **WARNING** (3+ repetitions): Try a different approach — scroll, use a different element, or navigate elsewhere.
+- **STUCK** (5+ repetitions): Current approach is not working. Navigate to a different URL, use `evaluate` to inspect the DOM, or call `done` with partial results.
+- **CRITICAL** (7+ repetitions): You are in an infinite loop. Call `done` immediately with partial results.
+
+Warnings appear as `loop_warning` in the action response. Loop detector resets on cross-domain navigation.
+
+## Auto Popup Dismissal
+
+JavaScript dialogs are automatically handled:
+- `alert` / `confirm` / `beforeunload`: Accepted (OK)
+- `prompt`: Dismissed (Cancel)
+
+Dismissed popup messages appear in the next snapshot header.
+
+## Download Handling
+
+File downloads are auto-saved to a session temp directory. Check downloads via the `get_downloads` action. Downloaded file info also appears in snapshot headers.
 
 ## Humanization
 
@@ -213,7 +265,7 @@ Per-domain action rate limits protect against detection:
 | x.com / twitter.com | 6/min |
 | instagram.com | 4/min |
 
-Read-only actions (snapshot, screenshot, cookies_get) are exempt. When rate limited:
+Read-only actions (snapshot, screenshot, cookies_get, search_page, find_elements, extract, get_downloads) are exempt. When rate limited:
 
 ```json
 {"success": false, "code": "RATE_LIMITED", "wait_seconds": 8.2}
@@ -231,6 +283,30 @@ Tier 2 and 3 sessions automatically block 25+ tracking/fingerprinting patterns v
 
 Not applied to Tier 1 (no stealth pretense).
 
+## WebMCP (Chrome 146+)
+
+WebMCP is a web standard that lets pages expose structured tools for AI agents. When available, it replaces guesswork-based form filling with explicit contracts.
+
+**Requirements:**
+- Chrome Dev (146+), Beta, or Canary
+- Set `BROWSER_USE_CHROME_CHANNEL=chrome-beta` or `BROWSER_USE_CHROME_PATH=/path/to/chrome`
+- `BROWSER_USE_WEBMCP=auto` (default) or `1` to force
+
+**How it works:**
+1. Init script intercepts `navigator.modelContext.registerTool()` calls on page load
+2. `webmcp_discover` reads captured tools + scans `<form toolname>` declarative elements
+3. `webmcp_call` invokes `tool.execute()` (imperative) or fills+submits form (declarative)
+4. Discovered tools appear in subsequent snapshot headers
+
+**Example:**
+```
+# Without WebMCP (6+ requests):
+snapshot → fill @e1 "LON" → fill @e2 "NYC" → fill @e3 "2026-06-10" → click @e7 → snapshot
+
+# With WebMCP (2 requests):
+webmcp_discover → webmcp_call searchFlights {origin:"LON", destination:"NYC", outboundDate:"2026-06-10"}
+```
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -242,6 +318,9 @@ Not applied to Tier 1 (no stealth pretense).
 | `PROXY_SERVER` | _(empty)_ | Proxy URL for Tier 2/3 (e.g., `http://proxy:8080`) |
 | `PROXY_USERNAME` | _(empty)_ | Proxy auth username |
 | `PROXY_PASSWORD` | _(empty)_ | Proxy auth password |
+| `BROWSER_USE_WEBMCP` | `auto` | `auto` = detect, `1` = force Chrome channel, `0` = disable |
+| `BROWSER_USE_CHROME_CHANNEL` | _(empty)_ | Chrome channel: `chrome-dev`, `chrome-beta`, `chrome-canary` |
+| `BROWSER_USE_CHROME_PATH` | _(empty)_ | Explicit Chrome binary path (overrides channel) |
 
 ### Geo Profiles
 
@@ -278,28 +357,28 @@ Errors are classified by recoverability:
 
 ```
 scripts/
-  server.py            # aiohttp HTTP server, auth, routing, rate limiting, block detection
+  server.py            # aiohttp HTTP server, auth, routing, rate limiting, block detection, loop detection
   agent.py             # stdin/stdout JSON interface (alternative to server)
-  browser_engine.py    # Multi-tier browser lifecycle, tracker blocking, session management
-  actions.py           # Action dispatcher (18 actions) with humanization layer
+  browser_engine.py    # Multi-tier browser lifecycle, tracker blocking, WebMCP init, popup/download handlers
+  actions.py           # Action dispatcher (25 actions) with humanization layer
   behavior.py          # Bezier mouse curves, Gaussian typing delays, eased scrolling
   detection.py         # Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX)
   fingerprint.py       # SQLite-backed fingerprint persistence, rotation on block rate
   rate_limiter.py      # Per-domain sliding window rate limiter
-  snapshot.py          # ARIA tree parser, ref assignment
+  snapshot.py          # ARIA tree parser, ref assignment, new-element detection
   session.py           # Profile persistence (cookies/storage/fingerprints)
   agent_fsm.py         # State machine for agent loop
   context_compaction.py # LLM history summarization for long sessions
   errors.py            # Error classification with AI-friendly transforms
   config.py            # Settings, geo profiles, env vars
-  models.py            # Pydantic v2 type definitions
+  models.py            # Pydantic v2 type definitions, loop detection, page fingerprinting
 ```
 
 ## Dependencies
 
 **Core (all tiers):**
 ```bash
-pip install aiohttp pydantic>=2.0
+pip install aiohttp pydantic>=2.0 markdownify
 ```
 
 **Tier 1 — Playwright:**

@@ -51,6 +51,26 @@ STRUCTURAL_ROLES = frozenset({
 # Metadata lines to skip
 _SKIP_PREFIXES = ("- /url:", "- /src:", "- /alt:")
 
+# ---------------------------------------------------------------------------
+# New-element detection (ported from browser-use star markers)
+# ---------------------------------------------------------------------------
+
+# Maps session_id -> set of "role:name:nth" identity strings from last snapshot
+_previous_ref_identities: dict[str, set[str]] = {}
+
+
+def _ref_identity(ref_data: dict) -> str:
+    """Compute a stable identity key for a ref entry."""
+    role = ref_data.get("role", "")
+    name = ref_data.get("name") or ""
+    nth = ref_data.get("nth", "")
+    return f"{role}:{name}:{nth}"
+
+
+def clear_previous_refs(session_id: str) -> None:
+    """Clear stored refs for a session (call on session close)."""
+    _previous_ref_identities.pop(session_id, None)
+
 # Pattern: "- role "name" [attr=val]:" or "- role:" or "- role "name":"
 # Also handles: "- text: content" and "- /url: ..."
 # Name group handles escaped quotes: "Click \"here\"" etc.
@@ -264,6 +284,8 @@ async def take_snapshot(
     compact: bool = True,
     max_depth: int = 10,
     cursor_interactive: bool = True,
+    webmcp_tools: dict | None = None,
+    session_id: str | None = None,
 ) -> dict:
     """Take an ARIA snapshot of the current page.
 
@@ -318,13 +340,52 @@ async def take_snapshot(
             }
             tree_text += f'\n- [cursor-interactive] "{el["text"]}" @{ref}'
 
+    # New-element detection: mark refs not seen in previous snapshot
+    new_refs: set[str] = set()
+    if session_id:
+        current_identities = {
+            ref_key: _ref_identity(ref_data)
+            for ref_key, ref_data in refs.items()
+        }
+        prev = _previous_ref_identities.get(session_id)
+        if prev is not None:
+            prev_set = prev
+            for ref_key, identity in current_identities.items():
+                if identity not in prev_set:
+                    new_refs.add(ref_key)
+        _previous_ref_identities[session_id] = set(current_identities.values())
+
+    # Mark new elements with * prefix in tree output
+    if new_refs:
+        marked_lines = []
+        for line in tree_text.split("\n"):
+            # Use token-level matching to avoid @e1 matching @e10, @e11, etc.
+            tokens = line.split()
+            if any(tok in new_refs for tok in tokens):
+                stripped = line.lstrip()
+                indent = line[:len(line) - len(stripped)]
+                marked_lines.append(f"{indent}*{stripped}")
+            else:
+                marked_lines.append(line)
+        tree_text = "\n".join(marked_lines)
+
     # Build header
     url = page.url
     title = await page.title()
     tab_count = len(page.context.pages)
-    header = f"Page: {url} | Title: {title}\nTab {_find_tab_index(page)} of {tab_count}\n\n"
+    header = f"Page: {url} | Title: {title}\nTab {_find_tab_index(page)} of {tab_count}\n"
 
-    return {
+    # Include WebMCP tools if discovered
+    if webmcp_tools:
+        header += "\nWebMCP Tools:\n"
+        for name, tool in webmcp_tools.items():
+            desc = (tool.get("description") or "")[:80]
+            tool_type = tool.get("type", "imperative")
+            header += f"  [{tool_type}] {name}: {desc}\n"
+
+    header += "\n"
+
+    result = {
         "success": True,
         "tree": header + tree_text,
         "refs": refs,
@@ -332,6 +393,9 @@ async def take_snapshot(
         "title": title,
         "tab_count": tab_count,
     }
+    if new_refs:
+        result["new_element_count"] = len(new_refs)
+    return result
 
 
 def _find_tab_index(page) -> int:

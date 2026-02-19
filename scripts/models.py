@@ -9,6 +9,9 @@ Enums and models used across the skill. Ported patterns:
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections import deque
 from enum import Enum
 from typing import Any
 
@@ -158,3 +161,122 @@ class FSMState(BaseModel):
     since_ms: int
     deadline_ms: int | None = None
     epoch: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Loop detection (ported from browser-use ActionLoopDetector pattern)
+# ---------------------------------------------------------------------------
+
+class PageFingerprint(BaseModel):
+    """Lightweight page identity for stagnation detection."""
+    url_hash: str
+    interactive_count: int
+    tab_count: int
+    top_ref_keys: tuple[str, ...] = ()
+
+    model_config = {"frozen": True}
+
+    @classmethod
+    def from_snapshot(
+        cls,
+        url: str,
+        refs: dict[str, dict],
+        tab_count: int,
+    ) -> PageFingerprint:
+        url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
+        sorted_keys = sorted(refs.keys())[:10]
+        ref_keys = tuple(
+            f"{refs[k].get('role', '')}:{refs[k].get('name') or ''}:{refs[k].get('nth', '')}"
+            for k in sorted_keys
+        )
+        return cls(
+            url_hash=url_hash,
+            interactive_count=len(refs),
+            tab_count=tab_count,
+            top_ref_keys=ref_keys,
+        )
+
+    def similarity(self, other: PageFingerprint) -> float:
+        """0.0 = completely different, 1.0 = identical."""
+        if self.url_hash != other.url_hash:
+            return 0.0
+        score = 0.5
+        if self.tab_count == other.tab_count:
+            score += 0.1
+        if self.interactive_count == other.interactive_count:
+            score += 0.1
+        if self.top_ref_keys and other.top_ref_keys:
+            overlap = len(set(self.top_ref_keys) & set(other.top_ref_keys))
+            max_len = max(len(self.top_ref_keys), len(other.top_ref_keys))
+            score += 0.3 * (overlap / max_len) if max_len else 0
+        return min(score, 1.0)
+
+
+def compute_action_hash(action_name: str, params: dict) -> str:
+    """Deterministic hash of action name + normalized parameters."""
+    stable = {
+        k: v for k, v in sorted(params.items())
+        if k not in ("session_id", "timestamp")
+    }
+    raw = f"{action_name}:{json.dumps(stable, sort_keys=True, default=str)}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+class ActionLoopDetector:
+    """Detects repetitive action patterns and stuck agents.
+
+    Rolling window of (action_hash, page_fingerprint) tuples.
+    Returns escalating warning strings when the same action+page pair
+    appears >= threshold times in the window.
+    """
+
+    def __init__(self, window_size: int = 10, threshold: int = 3):
+        self._window: deque[tuple[str, PageFingerprint | None]] = deque(maxlen=window_size)
+        self._threshold = threshold
+
+    def record(
+        self,
+        action_name: str,
+        params: dict,
+        fingerprint: PageFingerprint | None = None,
+    ) -> str | None:
+        """Record an action. Returns a warning string if loop detected."""
+        action_hash = compute_action_hash(action_name, params)
+        self._window.append((action_hash, fingerprint))
+
+        count = sum(1 for h, _ in self._window if h == action_hash)
+        if count < self._threshold:
+            return None
+
+        if fingerprint:
+            fp_matches = sum(
+                1 for h, fp in self._window
+                if h == action_hash and fp and fingerprint.similarity(fp) > 0.8
+            )
+        else:
+            fp_matches = count
+
+        if fp_matches < self._threshold:
+            return None
+
+        if count >= self._threshold + 4:
+            return (
+                f"CRITICAL: Action '{action_name}' repeated {count} times. "
+                "You are in an infinite loop. Call done immediately with partial results."
+            )
+        elif count >= self._threshold + 2:
+            return (
+                f"STUCK: Action '{action_name}' repeated {count} times. "
+                "Current approach is not working. Try: "
+                "1) navigate to a different URL, 2) use evaluate to inspect the DOM, "
+                "3) call done with partial results."
+            )
+        else:
+            return (
+                f"WARNING: Action '{action_name}' repeated {count} times on same page. "
+                "Try a different approach — scroll, use a different element, or navigate elsewhere."
+            )
+
+    def reset(self) -> None:
+        """Clear the window (e.g., after navigation to new domain)."""
+        self._window.clear()

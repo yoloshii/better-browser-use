@@ -16,6 +16,9 @@ profiles/
 *.json
 !references/*.md
 
+# Code review artifacts (contain local paths)
+.ralph/
+
 # IDE
 .idea/
 .vscode/
