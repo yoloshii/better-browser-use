@@ -34,8 +34,9 @@ The agent loop: **snapshot** (observe) → **reason** (decide) → **act** (exec
 ```bash
 git clone https://github.com/yoloshii/better-browser-use.git
 cd better-browser-use
-pip install aiohttp pydantic>=2.0 markdownify
-pip install playwright && playwright install chromium
+pip install 'pyee>=13,<14'
+pip install 'playwright>=1.51,<1.56' && playwright install chromium
+pip install aiohttp 'pydantic>=2.0' markdownify
 ```
 
 ### Start Server
@@ -377,29 +378,33 @@ scripts/
 ## Dependencies
 
 **Core (all tiers):**
-```bash
-pip install aiohttp pydantic>=2.0 markdownify
-```
+- Python 3.10+
+- pyee 13.x (`pip install 'pyee>=13,<14'`) — shared event emitter for Playwright + Patchright
+- pydantic v2 (`pip install 'pydantic>=2.0'`)
+- aiohttp (`pip install aiohttp`)
+- markdownify (`pip install markdownify`)
 
-**Tier 1 — Playwright:**
-```bash
-pip install playwright && playwright install chromium
-```
+**Tier 1 — Playwright (Chromium):**
+- `pip install 'playwright>=1.51,<1.56' && playwright install chromium`
+- Avoid 1.56+ (WSL2 regression: `new_page()` hangs in headless mode)
 
 **Tier 2 — Patchright** (stealth Chromium):
-```bash
-pip install patchright && patchright install chromium
-```
+- `pip install patchright && patchright install chromium`
+- Requires pyee>=13 — install pyee before playwright to satisfy both
 
 **Tier 3 — Camoufox** (anti-detect Firefox):
+- `pip install 'camoufox[geoip]' && python -m camoufox fetch`
+- `pip install 'playwright>=1.51,<1.56'` — Camoufox uses Playwright Firefox protocol
+
+**Install order** (to avoid pyee conflicts):
 ```bash
-pip install camoufox[geoip] && python -m camoufox fetch
-pip install playwright  # Camoufox uses Playwright Firefox protocol
+pip install 'pyee>=13,<14'
+pip install 'playwright>=1.51,<1.56' && playwright install chromium
+pip install patchright && patchright install chromium
+pip install aiohttp 'pydantic>=2.0' markdownify
 ```
 
 All tiers auto-install their browser binaries on first use.
-
-**Python 3.10+ required.**
 
 ## License
 
