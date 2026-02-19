@@ -89,12 +89,6 @@ time[datetime]                       # Timestamp
 - Tab management maps to `tab_new`/`tab_switch` actions
 - CDP mode is Phase 2 (current Tier 1 uses Playwright, not CDP)
 
-### For ultimate-scraper skill
-- Use `--session x-primary` for cookie persistence
-- `--mode browser` minimum (X requires JS rendering)
-- Extract prompt: target the stable selectors, request lean output
-- Visual extraction (`--visual`) as fallback if DOM selectors change
-
 ---
 
 ## Anti-Patterns (Avoid)
