@@ -161,14 +161,17 @@ Returns: `{success, screenshot}` (base64 PNG)
 |--------|--------|-------------|
 | `navigate` | `{url}` | Go to URL |
 | `click` | `{ref}` | Click element by ref |
+| `dblclick` | `{ref}` | Double-click element by ref |
+| `rightclick` | `{ref}` | Right-click element by ref (opens context menu) |
 | `fill` | `{ref, value}` | Atomic fill (clears first). For forms. |
 | `type` | `{ref, text, delay_ms?}` | Character-by-character typing. For compose/search. |
 | `scroll` | `{direction: up\|down, amount: int\|"page"}` | Scroll page |
 | `snapshot` | `{compact?, max_depth?, cursor_interactive?}` | ARIA tree + refs |
 | `screenshot` | `{full_page?}` | Base64 PNG |
-| `wait` | `{ms}` | Explicit wait (max 30s) |
+| `wait` | `{ms?, selector?, text?, state?, timeout?}` | Wait for time, selector, or text. `state`: visible\|hidden\|attached (default: visible). Max 30s. |
 | `evaluate` | `{js}` | Execute JavaScript (requires BROWSER_USE_EVALUATE=1) |
 | `done` | `{result, success?}` | Mark task complete |
+| `solve_captcha` | `{}` | Auto-detect + solve CAPTCHA on page (optional, requires API keys) |
 
 ### Extended
 | Action | Params | Description |
@@ -178,6 +181,8 @@ Returns: `{success, screenshot}` (base64 PNG)
 | `go_back` | `{}` | Browser back |
 | `cookies_get` | `{domain?}` | Get cookies |
 | `cookies_set` | `{cookies: [...]}` | Set cookies |
+| `cookies_export` | `{path, domain?}` | Export cookies to JSON file. Optional domain filter. Read-only. |
+| `cookies_import` | `{path}` | Import cookies from JSON file into browser context |
 | `tab_new` | `{url?}` | New tab |
 | `tab_switch` | `{index}` | Switch tab (0-based) |
 | `tab_close` | `{index}` | Close tab |
@@ -204,9 +209,16 @@ WebMCP tools appear in snapshot headers after discovery. Use `webmcp_call` inste
 | `get_downloads` | `{}` | List files downloaded in this session. Read-only. |
 | `click_coordinate` | `{x, y}` | Click at viewport coordinates. Last resort for non-ARIA elements. |
 
+### Element Inspection
+| Action | Params | Description |
+|--------|--------|-------------|
+| `get_value` | `{ref}` | Get current value of input/textarea/select. Falls back to textContent. Read-only. |
+| `get_attributes` | `{ref}` | Get all HTML attributes + tag name (`_tag`). Read-only. |
+| `get_bbox` | `{ref}` | Get bounding box `{x, y, width, height}` in viewport pixels. Use for `click_coordinate` targeting. Read-only. |
+
 ### Agent Guidance
 
-**Action cost**: `search_page`, `find_elements`, `get_downloads` are free (read-only, no rate limit). `extract` is expensive (full page parse). Page-changing actions (`navigate`, `click`, `fill`, `upload_file`, `click_coordinate`) count toward rate limits.
+**Action cost**: `search_page`, `find_elements`, `get_downloads`, `get_value`, `get_attributes`, `get_bbox`, `cookies_export` are free (read-only, no rate limit). `extract` is expensive (full page parse). Page-changing actions (`navigate`, `click`, `dblclick`, `rightclick`, `fill`, `upload_file`, `click_coordinate`, `cookies_import`) count toward rate limits.
 
 **Action chaining**: Put page-changing actions last. Safe to chain read-only actions before them.
 
@@ -286,15 +298,25 @@ Server enforces per-domain action rate limits (from `Config.SENSITIVE_RATE_LIMIT
 | x.com / twitter.com | 6/min |
 | instagram.com | 4/min |
 
-Read-only actions (snapshot, screenshot, cookies_get, search_page, find_elements, extract, get_downloads) are exempt.
+Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox) are exempt.
 If rate limited, response includes `{"code": "RATE_LIMITED", "wait_seconds": N}`.
 
-## Block Detection
+## Block Detection & CAPTCHA Solving
 
 After page-changing actions, server runs lightweight block detection.
 If blocked, response includes `{"blocked": true, "protection": "<type>"}`.
 
 Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic.
+
+**Auto-solve (optional)**: When CAPTCHA/Cloudflare is detected and solver API keys are configured, the server automatically attempts to solve it inline. On success: `{"blocked": false, "captcha_solved": true, "solver": "capsolver", "solve_time_s": 3.2}`. On failure: `{"blocked": true, "captcha_solve_failed": true}`.
+
+**Manual solve**: Use `{"action": "solve_captcha"}` to explicitly trigger solving on any page with a CAPTCHA. Supports reCAPTCHA v2/v3, hCaptcha, Cloudflare Turnstile.
+
+**Solver tiers** (pay-as-you-go):
+1. **CapSolver** (`CAPSOLVER_API_KEY`) — AI-based, fast (1-10s), ~$1-3/1000 solves
+2. **2Captcha** (`TWOCAPTCHA_API_KEY`) — Human fallback, slower (10-30s), broadest coverage
+
+No API keys configured = CAPTCHA solving disabled (no errors, feature simply inactive).
 
 ## Error Handling
 
@@ -325,7 +347,8 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | Server | `scripts/server.py` | aiohttp HTTP server, auth, request routing, rate limiting, block detection, loop detection |
 | Agent | `scripts/agent.py` | stdin/stdout JSON interface (alternative to server) |
 | Browser Engine | `scripts/browser_engine.py` | Multi-tier browser lifecycle, tracker blocking, WebMCP init, popup/download handlers, session management, idle GC |
-| Actions | `scripts/actions.py` | Action dispatcher (25 actions) with humanization layer |
+| Actions | `scripts/actions.py` | Action dispatcher (34 actions) with humanization layer |
+| CAPTCHA Solver | `scripts/captcha_solver.py` | CapSolver + 2Captcha integration, sitekey extraction, token injection |
 | Behavior | `scripts/behavior.py` | Bezier mouse curves, Gaussian typing delays, eased scrolling |
 | Detection | `scripts/detection.py` | Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX), site profiles |
 | Fingerprint | `scripts/fingerprint.py` | SQLite-backed fingerprint persistence per domain, rotation on block rate |
@@ -349,6 +372,8 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | `PROXY_SERVER` | (empty) | Proxy URL (e.g., `http://proxy:8080`). Used by Tier 2/3. |
 | `PROXY_USERNAME` | (empty) | Proxy auth username |
 | `PROXY_PASSWORD` | (empty) | Proxy auth password |
+| `CAPSOLVER_API_KEY` | (empty) | CapSolver API key for CAPTCHA solving (optional, fast AI solver) |
+| `TWOCAPTCHA_API_KEY` | (empty) | 2Captcha API key for CAPTCHA solving (optional, human fallback) |
 | `BROWSER_USE_WEBMCP` | `auto` | `auto` = detect, `1` = force Chrome channel, `0` = disable |
 | `BROWSER_USE_CHROME_CHANNEL` | (empty) | Chrome channel: `chrome-dev`, `chrome-beta`, `chrome-canary`, `chrome` |
 | `BROWSER_USE_CHROME_PATH` | (empty) | Explicit Chrome binary path (overrides channel) |

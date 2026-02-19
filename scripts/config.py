@@ -55,6 +55,10 @@ class Config:
     PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
     PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
 
+    # CAPTCHA solving (optional — bring your own pay-as-you-go API keys)
+    CAPSOLVER_API_KEY = os.getenv("CAPSOLVER_API_KEY", "")
+    TWOCAPTCHA_API_KEY = os.getenv("TWOCAPTCHA_API_KEY", "")
+
     # Persistence paths
     PROFILE_DIR = Path.home() / ".browser-use" / "profiles"
     SESSION_DIR = Path("/tmp/browser-use-sessions")

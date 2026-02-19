@@ -215,6 +215,24 @@ async def handle_request_inner(request_data: dict) -> dict:
                         if protection:
                             result["blocked"] = True
                             result["protection"] = protection
+
+                            # Auto-solve CAPTCHA if solver keys are configured
+                            if protection in ("captcha", "cloudflare") and (
+                                Config.CAPSOLVER_API_KEY or Config.TWOCAPTCHA_API_KEY
+                            ):
+                                try:
+                                    from captcha_solver import solve_captcha
+                                    solve_result = await solve_captcha(active_page)
+                                    if solve_result.get("success"):
+                                        result["captcha_solved"] = True
+                                        result["solver"] = solve_result.get("solver")
+                                        result["solve_time_s"] = solve_result.get("solve_time_s")
+                                        result["blocked"] = False
+                                    else:
+                                        result["captcha_solve_failed"] = True
+                                        result["captcha_error"] = solve_result.get("error", "")
+                                except Exception:
+                                    pass
                 except Exception:
                     pass
 

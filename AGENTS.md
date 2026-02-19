@@ -1,6 +1,6 @@
 # better-browser-use
 
-HTTP-based browser automation server (port 8500) with ARIA snapshot navigation, 3 stealth tiers, 25 actions, WebMCP support, and human-like behavior simulation.
+HTTP-based browser automation server (port 8500) with ARIA snapshot navigation, 3 stealth tiers, 34 actions, WebMCP support, and human-like behavior simulation.
 
 ## Running
 
@@ -91,7 +91,7 @@ webmcp_call toolName {field1: "val", field2: "val"} → done
 |------|---------|
 | `scripts/server.py` | HTTP server, routing, loop detection, popup/download surfacing |
 | `scripts/browser_engine.py` | Browser lifecycle, WebMCP init script, popup/download handlers |
-| `scripts/actions.py` | 25 action handlers with humanization |
+| `scripts/actions.py` | 32 action handlers with humanization |
 | `scripts/snapshot.py` | ARIA tree parser, ref assignment, new-element detection |
 | `scripts/models.py` | Pydantic models, PageFingerprint, ActionLoopDetector |
 | `scripts/config.py` | All settings and env vars |
@@ -109,7 +109,7 @@ webmcp_call toolName {field1: "val", field2: "val"} → done
 
 ## Rate Limiting
 
-Social media sites have lower limits (4-6/min). Read-only actions (snapshot, screenshot, search_page, find_elements, extract, get_downloads) are exempt.
+Social media sites have lower limits (4-6/min). Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox) are exempt.
 
 ## Proxy Configuration
 

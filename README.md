@@ -361,7 +361,7 @@ scripts/
   server.py            # aiohttp HTTP server, auth, routing, rate limiting, block detection, loop detection
   agent.py             # stdin/stdout JSON interface (alternative to server)
   browser_engine.py    # Multi-tier browser lifecycle, tracker blocking, WebMCP init, popup/download handlers
-  actions.py           # Action dispatcher (25 actions) with humanization layer
+  actions.py           # Action dispatcher (34 actions) with humanization layer
   behavior.py          # Bezier mouse curves, Gaussian typing delays, eased scrolling
   detection.py         # Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX)
   fingerprint.py       # SQLite-backed fingerprint persistence, rotation on block rate

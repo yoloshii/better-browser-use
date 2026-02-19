@@ -1,7 +1,7 @@
 """
 Action implementations for browser-use.
 
-Core (26 actions) + humanization layer via behavior module.
+Core (33 actions) + humanization layer via behavior module.
 When session["humanize"] is True, click/type/scroll use
 Bezier curves, Gaussian typing delays, and eased scrolling.
 """
@@ -369,8 +369,54 @@ async def action_screenshot(page, params: dict, session: dict) -> dict:
 
 
 async def action_wait(page, params: dict, session: dict) -> dict:
-    """Explicit wait."""
-    ms = params.get("ms", 1000)
+    """Wait for a condition or a fixed duration.
+
+    Params:
+        ms (int): Fixed wait in milliseconds (max 30000). Used when no selector/text.
+        selector (str): CSS selector to wait for (e.g. "h1", ".loaded", "#result").
+        text (str): Wait for this text to appear anywhere on the page.
+        state (str): Element state: "visible" (default), "hidden", "attached".
+        timeout (int): Max wait time in ms for selector/text (default 10000, max 30000).
+    """
+    selector = params.get("selector")
+    text = params.get("text")
+    state = params.get("state", "visible")
+    timeout = min(params.get("timeout", 10_000), 30_000)
+
+    # Selector wait — wait for CSS selector to reach desired state
+    if selector:
+        try:
+            await page.wait_for_selector(selector, state=state, timeout=timeout)
+            return {
+                "success": True,
+                "extracted_content": f"Selector '{selector}' is {state}",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Timeout waiting for selector '{selector}' (state={state}, {timeout}ms): {to_ai_friendly_error(e)}",
+            }
+
+    # Text wait — poll for text content on the page
+    if text:
+        try:
+            await page.wait_for_function(
+                "(t) => document.body && document.body.innerText.includes(t)",
+                arg=text,
+                timeout=timeout,
+            )
+            return {
+                "success": True,
+                "extracted_content": f"Text '{text}' appeared on page",
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Timeout waiting for text '{text}' ({timeout}ms): {to_ai_friendly_error(e)}",
+            }
+
+    # Fixed duration wait (original behavior)
+    ms = min(params.get("ms", 1000), 30_000)
     await asyncio.sleep(ms / 1000)
     return {
         "success": True,
@@ -433,6 +479,16 @@ async def action_evaluate(page, params: dict, session: dict) -> dict:
         return {"success": False, "error": to_ai_friendly_error(e)}
 
 
+async def action_solve_captcha(page, params: dict, session: dict) -> dict:
+    """Detect and solve CAPTCHA on the current page.
+
+    Extracts sitekey automatically, tries CapSolver (fast AI),
+    falls back to 2Captcha (human). Injects token back into page.
+    """
+    from captcha_solver import solve_captcha
+    return await solve_captcha(page)
+
+
 async def action_done(page, params: dict, session: dict) -> dict:
     """Mark the task as complete."""
     return {
@@ -444,6 +500,50 @@ async def action_done(page, params: dict, session: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Extended actions (Phase 1.5)
 # ---------------------------------------------------------------------------
+
+async def action_dblclick(page, params: dict, session: dict) -> dict:
+    """Double-click an element by ref."""
+    ref = params.get("ref")
+    if not ref:
+        return {"success": False, "error": "Missing required param: ref"}
+
+    ref_map = session.get("ref_map", {})
+    locator = await _resolve_ref(page, ref, ref_map)
+    if locator is None:
+        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+
+    try:
+        await locator.dblclick(timeout=10_000, force=True)
+        await asyncio.sleep(0.3)
+        return {
+            "success": True,
+            "extracted_content": f"Double-clicked {ref}",
+        }
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+async def action_rightclick(page, params: dict, session: dict) -> dict:
+    """Right-click (context menu) an element by ref."""
+    ref = params.get("ref")
+    if not ref:
+        return {"success": False, "error": "Missing required param: ref"}
+
+    ref_map = session.get("ref_map", {})
+    locator = await _resolve_ref(page, ref, ref_map)
+    if locator is None:
+        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+
+    try:
+        await locator.click(button="right", timeout=10_000, force=True)
+        await asyncio.sleep(0.3)
+        return {
+            "success": True,
+            "extracted_content": f"Right-clicked {ref}",
+        }
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
 
 async def action_press(page, params: dict, session: dict) -> dict:
     """Press a keyboard key, optionally focused on a ref."""
@@ -540,6 +640,64 @@ async def action_cookies_set(page, params: dict, session: dict) -> dict:
             "success": True,
             "extracted_content": f"Set {len(cookies)} cookie(s)",
         }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def action_cookies_export(page, params: dict, session: dict) -> dict:
+    """Export cookies to a JSON file.
+
+    Params:
+        path (str): File path to write cookies JSON.
+        domain (str): Optional — only export cookies for this domain.
+    """
+    import os
+
+    file_path = params.get("path", "")
+    domain = params.get("domain")
+    if not file_path:
+        return {"success": False, "error": "Missing required param: path"}
+
+    try:
+        urls = [f"https://{domain}"] if domain else None
+        cookies = await page.context.cookies(urls)
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+        with open(file_path, "w") as f:
+            json.dump(cookies, f, indent=2, default=str)
+        return {
+            "success": True,
+            "extracted_content": f"Exported {len(cookies)} cookie(s) to {file_path}",
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+async def action_cookies_import(page, params: dict, session: dict) -> dict:
+    """Import cookies from a JSON file.
+
+    Params:
+        path (str): File path to read cookies JSON from.
+    """
+    import os
+
+    file_path = params.get("path", "")
+    if not file_path:
+        return {"success": False, "error": "Missing required param: path"}
+    if not os.path.isfile(file_path):
+        return {"success": False, "error": f"File not found: {file_path}"}
+
+    try:
+        with open(file_path) as f:
+            cookies = json.load(f)
+        if not isinstance(cookies, list):
+            return {"success": False, "error": "Cookie file must contain a JSON array"}
+        await page.context.add_cookies(cookies)
+        return {
+            "success": True,
+            "extracted_content": f"Imported {len(cookies)} cookie(s) from {file_path}",
+        }
+    except json.JSONDecodeError as e:
+        return {"success": False, "error": f"Invalid JSON in cookie file: {e}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -899,6 +1057,101 @@ async def action_find_elements(page, params: dict, session: dict) -> dict:
     }
 
 
+async def action_get_value(page, params: dict, session: dict) -> dict:
+    """Get the current value of an input, textarea, or select element.
+
+    Params:
+        ref (str): Element ref from snapshot.
+    """
+    ref = params.get("ref")
+    if not ref:
+        return {"success": False, "error": "Missing required param: ref"}
+
+    ref_map = session.get("ref_map", {})
+    locator = await _resolve_ref(page, ref, ref_map)
+    if locator is None:
+        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+
+    try:
+        value = await locator.input_value(timeout=5_000)
+        return {
+            "success": True,
+            "extracted_content": value,
+        }
+    except Exception:
+        # Fallback for non-input elements (contenteditable, etc.)
+        try:
+            value = await locator.evaluate("el => el.value ?? el.textContent ?? ''")
+            return {
+                "success": True,
+                "extracted_content": str(value),
+            }
+        except Exception as e:
+            return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+async def action_get_attributes(page, params: dict, session: dict) -> dict:
+    """Get all HTML attributes of an element.
+
+    Params:
+        ref (str): Element ref from snapshot.
+    """
+    ref = params.get("ref")
+    if not ref:
+        return {"success": False, "error": "Missing required param: ref"}
+
+    ref_map = session.get("ref_map", {})
+    locator = await _resolve_ref(page, ref, ref_map)
+    if locator is None:
+        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+
+    try:
+        attrs = await locator.evaluate("""el => {
+            const obj = {};
+            for (const attr of el.attributes) {
+                obj[attr.name] = attr.value;
+            }
+            obj['_tag'] = el.tagName.toLowerCase();
+            return obj;
+        }""")
+        return {
+            "success": True,
+            "extracted_content": json.dumps(attrs, indent=2),
+        }
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+async def action_get_bbox(page, params: dict, session: dict) -> dict:
+    """Get the bounding box of an element (viewport coordinates).
+
+    Returns: {x, y, width, height} — useful for click_coordinate targeting.
+
+    Params:
+        ref (str): Element ref from snapshot.
+    """
+    ref = params.get("ref")
+    if not ref:
+        return {"success": False, "error": "Missing required param: ref"}
+
+    ref_map = session.get("ref_map", {})
+    locator = await _resolve_ref(page, ref, ref_map)
+    if locator is None:
+        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+
+    try:
+        box = await locator.bounding_box(timeout=5_000)
+        if box is None:
+            return {"success": False, "error": f"Element {ref} is not visible (no bounding box)"}
+        return {
+            "success": True,
+            "extracted_content": json.dumps(box),
+            "bbox": box,
+        }
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
 async def action_extract(page, params: dict, session: dict) -> dict:
     """Extract page content as clean markdown.
 
@@ -1153,6 +1406,8 @@ ACTION_HANDLERS: dict[str, ActionHandler] = {
     # Core (Phase 1)
     "navigate": action_navigate,
     "click": action_click,
+    "dblclick": action_dblclick,
+    "rightclick": action_rightclick,
     "fill": action_fill,
     "type": action_type,
     "scroll": action_scroll,
@@ -1161,12 +1416,15 @@ ACTION_HANDLERS: dict[str, ActionHandler] = {
     "wait": action_wait,
     "evaluate": action_evaluate,
     "done": action_done,
+    "solve_captcha": action_solve_captcha,
     # Extended (Phase 1.5)
     "press": action_press,
     "select": action_select,
     "go_back": action_go_back,
     "cookies_get": action_cookies_get,
     "cookies_set": action_cookies_set,
+    "cookies_export": action_cookies_export,
+    "cookies_import": action_cookies_import,
     "tab_new": action_tab_new,
     "tab_switch": action_tab_switch,
     "tab_close": action_tab_close,
@@ -1177,6 +1435,10 @@ ACTION_HANDLERS: dict[str, ActionHandler] = {
     "search_page": action_search_page,
     "find_elements": action_find_elements,
     "extract": action_extract,
+    # Element Inspection (Phase 3)
+    "get_value": action_get_value,
+    "get_attributes": action_get_attributes,
+    "get_bbox": action_get_bbox,
     # File Operations (Phase 2)
     "upload_file": action_upload_file,
     "get_downloads": action_get_downloads,
