@@ -329,7 +329,7 @@ webmcp_discover → webmcp_call searchFlights {origin:"LON", destination:"NYC", 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BROWSER_USE_TOKEN` | _(empty)_ | Bearer auth token. Omit to disable auth. |
+| `BROWSER_USE_TOKEN` | _(empty)_ | Your server's auth token (any string you choose). Not the official browser-use cloud key. |
 | `BROWSER_USE_EVALUATE` | `1` | `0` to disable `evaluate` (arbitrary JS) |
 | `BROWSER_USE_HUMANIZE` | `0` | `1` to force humanization on all tiers |
 | `BROWSER_USE_GEO` | _(empty)_ | Geo profile: `us`, `uk`, `de`, `jp`, `au`, `br`, `in`, etc. |

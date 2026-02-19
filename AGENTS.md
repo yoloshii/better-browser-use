@@ -8,7 +8,7 @@ HTTP-based browser automation server (port 8500) with ARIA snapshot navigation, 
 # Start server
 python scripts/server.py --port 8500
 
-# With auth
+# With auth (your own token, not an official browser-use API key)
 BROWSER_USE_TOKEN=<secret> python scripts/server.py --port 8500
 
 # Health check

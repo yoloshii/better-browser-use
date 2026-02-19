@@ -57,7 +57,7 @@ curl -s -X POST http://127.0.0.1:8500/ -H 'Content-Type: application/json' \
 
 Persistent HTTP server on port 8500. All requests: `POST /` with JSON body.
 
-Server binds `127.0.0.1` by default. Set `BROWSER_USE_TOKEN` for Bearer auth. Set `BROWSER_USE_EVALUATE=1` to enable arbitrary JS execution.
+Server binds `127.0.0.1` by default. Set `BROWSER_USE_TOKEN` to any secret string for Bearer auth (this is your own server token, not an official browser-use API key). Set `BROWSER_USE_EVALUATE=1` to enable arbitrary JS execution.
 
 ```bash
 # Health check (no auth required)
@@ -365,7 +365,7 @@ No API keys configured = CAPTCHA solving disabled (no errors, feature simply ina
 
 | Env Variable | Default | Description |
 |-------------|---------|-------------|
-| `BROWSER_USE_TOKEN` | (empty) | Bearer auth token for server. Omit to disable auth. |
+| `BROWSER_USE_TOKEN` | (empty) | Your server's auth token (any string you choose). Not the official browser-use cloud key — no external account needed. |
 | `BROWSER_USE_EVALUATE` | `1` | Set to `0` to disable `evaluate` (arbitrary JS) action |
 | `BROWSER_USE_HUMANIZE` | `0` | Set to `1` to force humanized actions on all tiers (Tier 2+ auto-enables) |
 | `BROWSER_USE_GEO` | (empty) | Geo profile for timezone/locale (e.g., `us`, `uk`, `de`, `jp`). See geo profiles below. |
