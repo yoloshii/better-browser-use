@@ -429,6 +429,34 @@ pip install aiohttp 'pydantic>=2.0' markdownify python-dotenv
 
 All tiers auto-install their browser binaries on first use if not already present.
 
+## Platform Notes: WSL2 and Virtual Machines
+
+Tier 3 (Camoufox) relies on hardware-backed fingerprints — canvas rendering, WebGL pipeline, audio context — to pass advanced bot detection like Cloudflare Turnstile. Virtualized environments can produce inconsistent or synthetic fingerprints that these systems detect.
+
+| Environment | Tier 1-2 | Tier 3 (Turnstile) | Notes |
+|-------------|----------|-------------------|-------|
+| Native Linux | OK | OK | Best fingerprint consistency |
+| macOS | OK | OK | Native GPU provides real fingerprints |
+| Windows (native) | OK | OK | Real GPU available |
+| WSL2 | OK | Unreliable | Virtual GPU (Microsoft Basic Render Driver) produces detectable fingerprints |
+| Docker (no GPU) | OK | Unreliable | No real GPU for canvas/WebGL |
+| Cloud VMs (shared GPU) | OK | Varies | Depends on GPU passthrough quality |
+
+**Symptoms of fingerprint detection:**
+- Turnstile widget loads but never solves (stays pending indefinitely)
+- Page shows "We couldn't verify if you are human" after 10-30s
+- Network captures show zero callbacks to the protected site's API
+
+**Known WSL2 issues:**
+- Playwright 1.56+: `new_page()` hangs in headless mode — pin to `>=1.51,<1.56`
+- Tier 3 + Cloudflare Turnstile: Camoufox launches fine but Turnstile never passes (0% success rate observed)
+
+**Workarounds:**
+- Run Tier 3 tasks on a native Linux or macOS host
+- If you only have WSL2, use a remote native Linux machine via SSH
+- For Turnstile specifically, a residential proxy improves pass rate on native hosts but does not fix the WSL2 fingerprint issue
+- Tiers 1-2 work normally on WSL2 for sites without Turnstile/advanced bot detection
+
 ## WebMCP Integration
 
 WebMCP is a Chrome 146+ web standard that lets pages expose structured tools for AI agents. When available, it replaces guesswork-based form filling with explicit contracts.
