@@ -400,6 +400,105 @@ async def test_rotate_fingerprint(s):
             log("  Session closed.")
 
 
+async def test_bowser_actions(s):
+    log("--- Bowser Port: hover, go_forward, console, storage, pdf, resize ---")
+    sid = None
+    try:
+        r = await req(s, {"op": "launch", "tier": 1, "url": "https://crawllab.dev/"})
+        sid = r.get("session_id")
+        if not sid:
+            record("bowser launch", False, f"launch failed: {r.get('error')}")
+            return
+
+        # hover — use example.com for a simple, visible page
+        r = await req(s, {"op": "action", "session_id": sid, "action": "navigate",
+                          "params": {"url": "https://example.com"}})
+        r = await req(s, {"op": "snapshot", "session_id": sid, "compact": True})
+        refs = r.get("refs", {})
+        hover_ref = None
+        for k, v in refs.items():
+            if isinstance(v, dict) and v.get("role") in ("link",):
+                hover_ref = k
+                break
+        if hover_ref:
+            r = await req(s, {"op": "action", "session_id": sid, "action": "hover",
+                              "params": {"ref": hover_ref}})
+            record("hover", r.get("success", False),
+                   f"ref={hover_ref} content={r.get('extracted_content', '')} err={r.get('error', '')}")
+        else:
+            record("hover", False, "no link ref found on example.com")
+
+        # go_forward: navigate away, go_back, then go_forward to return
+        r = await req(s, {"op": "action", "session_id": sid, "action": "navigate",
+                          "params": {"url": "https://crawllab.dev/"}})
+        r = await req(s, {"op": "action", "session_id": sid, "action": "go_back",
+                          "params": {}})
+        r = await req(s, {"op": "action", "session_id": sid, "action": "go_forward",
+                          "params": {}})
+        record("go_forward", r.get("success", False) and r.get("page_changed", False),
+               f"url={r.get('new_url', '?')}")
+
+        # console: inject a log via evaluate, then retrieve
+        r = await req(s, {"op": "action", "session_id": sid, "action": "evaluate",
+                          "params": {"js": "console.log('e2e-test-marker'); console.error('e2e-error-marker')"}})
+        await asyncio.sleep(0.5)
+        r = await req(s, {"op": "action", "session_id": sid, "action": "console",
+                          "params": {}})
+        content = r.get("extracted_content", "")
+        has_log = "e2e-test-marker" in content
+        has_error = "e2e-error-marker" in content
+        record("console capture", r.get("success", False) and has_log and has_error,
+               f"has_log={has_log}, has_error={has_error}, messages={r.get('message_count', 0)}")
+
+        # console with level filter
+        r = await req(s, {"op": "action", "session_id": sid, "action": "console",
+                          "params": {"level": "error"}})
+        content = r.get("extracted_content", "")
+        record("console filter", "e2e-error-marker" in content and "e2e-test-marker" not in content,
+               f"filtered_content={content[:100]}")
+
+        # storage_set + storage_get roundtrip
+        r = await req(s, {"op": "action", "session_id": sid, "action": "storage_set",
+                          "params": {"key": "e2e_test", "value": "hello_42"}})
+        record("storage_set", r.get("success", False),
+               f"content={r.get('extracted_content', '')}")
+
+        r = await req(s, {"op": "action", "session_id": sid, "action": "storage_get",
+                          "params": {"key": "e2e_test"}})
+        record("storage_get", r.get("success", False) and r.get("extracted_content") == "hello_42",
+               f"value={r.get('extracted_content', '')}")
+
+        # storage_get all
+        r = await req(s, {"op": "action", "session_id": sid, "action": "storage_get",
+                          "params": {}})
+        record("storage_get all", r.get("success", False) and "e2e_test" in r.get("extracted_content", ""),
+               f"content_len={len(r.get('extracted_content', ''))}")
+
+        # pdf
+        r = await req(s, {"op": "action", "session_id": sid, "action": "pdf",
+                          "params": {}})
+        pdf_data = r.get("pdf", "")
+        record("pdf", r.get("success", False) and len(pdf_data) > 100,
+               f"pdf_len={len(pdf_data)}")
+
+        # resize
+        r = await req(s, {"op": "action", "session_id": sid, "action": "resize",
+                          "params": {"width": 800, "height": 600}})
+        record("resize", r.get("success", False),
+               f"content={r.get('extracted_content', '')}")
+
+        # resize back
+        r = await req(s, {"op": "action", "session_id": sid, "action": "resize",
+                          "params": {"width": 1920, "height": 1080}})
+        record("resize restore", r.get("success", False),
+               f"content={r.get('extracted_content', '')}")
+
+    finally:
+        if sid:
+            await req(s, {"op": "close", "session_id": sid})
+            log("  Session closed.")
+
+
 async def test_click_coordinate(s):
     log("--- click_coordinate test ---")
     sid = None
@@ -445,6 +544,7 @@ async def main():
             await test_batch_actions(s)
             await test_snapshot_diff(s)
             await test_rotate_fingerprint(s)
+            await test_bowser_actions(s)
             await test_click_coordinate(s)
             await test_multi_session_status(s)
         except Exception as e:

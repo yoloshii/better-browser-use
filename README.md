@@ -109,6 +109,10 @@ Dependencies auto-install on first use per tier.
 | `click` | `{ref}` | Click element by ref |
 | `dblclick` | `{ref}` | Double-click element by ref |
 | `rightclick` | `{ref}` | Right-click (context menu) element by ref |
+| `hover` | `{ref}` | Hover over element (reveals dropdowns, tooltips) |
+| `drag` | `{source_ref, target_ref}` | Drag one element to another |
+| `check` | `{ref}` | Check a checkbox (no-op if already checked) |
+| `uncheck` | `{ref}` | Uncheck a checkbox (no-op if already unchecked) |
 | `fill` | `{ref, value}` | Clear + fill (forms) |
 | `type` | `{ref, text, delay_ms?}` | Character-by-character typing (search, compose) |
 | `scroll` | `{direction, amount}` | `up`/`down`, pixels or `"page"` |
@@ -126,6 +130,7 @@ Dependencies auto-install on first use per tier.
 | Action | Params | Description |
 |--------|--------|-------------|
 | `go_back` | `{}` | Browser back |
+| `go_forward` | `{}` | Browser forward |
 | `tab_new` | `{url?}` | Open new tab |
 | `tab_switch` | `{index}` | Switch tab (0-based) |
 | `tab_close` | `{index}` | Close tab |
@@ -165,6 +170,21 @@ Dependencies auto-install on first use per tier.
 | Action | Params | Description |
 |--------|--------|-------------|
 | `rotate_fingerprint` | `{geo?}` | Inject JS to rotate navigator fingerprint (Tier 1-2 only; Tier 3 Camoufox handles natively). |
+
+### Viewport & Capture
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `resize` | `{width, height}` | Resize viewport (320-7680 x 200-4320). |
+| `pdf` | `{format?, print_background?}` | Save page as PDF (base64). Headless Chromium only. |
+
+### Console & Storage
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `console` | `{level?, clear?}` | Get captured JS console messages. Filter by level (error/warning/log). |
+| `storage_get` | `{type?, key?}` | Read localStorage (default) or sessionStorage. Omit key for all entries. |
+| `storage_set` | `{type?, key, value}` | Write to localStorage or sessionStorage. |
 
 ## Batch Actions
 
@@ -317,7 +337,7 @@ Per-domain action rate limits protect against detection:
 | x.com / twitter.com | 6/min |
 | instagram.com | 4/min |
 
-Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox, solve_captcha, rotate_fingerprint) are exempt. When rate limited:
+Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox, solve_captcha, rotate_fingerprint, console, storage_get, pdf, resize) are exempt. When rate limited:
 
 ```json
 {"success": false, "code": "RATE_LIMITED", "wait_seconds": 8.2}
@@ -414,7 +434,7 @@ scripts/
   server.py            # aiohttp HTTP server, auth, routing, rate limiting, block detection, loop detection
   agent.py             # stdin/stdout JSON interface (alternative to server)
   browser_engine.py    # Multi-tier browser lifecycle, tracker blocking, WebMCP init, popup/download handlers
-  actions.py           # Action dispatcher (35 actions) with humanization layer
+  actions.py           # Action dispatcher (45 actions) with humanization layer
   behavior.py          # Bezier mouse curves, Gaussian typing delays, eased scrolling, typo injection
   detection.py         # Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX)
   fingerprint.py       # SQLite-backed fingerprint persistence, rotation on block rate

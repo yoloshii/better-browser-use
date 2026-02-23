@@ -142,16 +142,6 @@ Returns: `{success, extracted_content, error, page_changed, new_url}`
 ```
 Returns: `{success, screenshot}` (base64 PNG)
 
-### Batch Actions
-```json
-{"op": "actions", "session_id": "<id>", "actions": [
-  {"action": "click", "params": {"ref": "@e1"}},
-  {"action": "type", "params": {"ref": "@e2", "text": "hello"}},
-  {"action": "press", "params": {"key": "Enter"}}
-], "stop_on_error": true}
-```
-Returns: `{success, results: [...], stopped_at: null|index}`. Max 20 actions per batch. Each action runs the full pipeline (rate limit, loop detect, block detect). Ref maps propagate between steps. `stop_on_error` (default `true`) halts batch on first failure.
-
 ### Save / Close / Status / Profile
 ```json
 {"op": "save", "session_id": "<id>", "profile": "my-identity"}
@@ -226,29 +216,19 @@ WebMCP tools appear in snapshot headers after discovery. Use `webmcp_call` inste
 | `get_attributes` | `{ref}` | Get all HTML attributes + tag name (`_tag`). Read-only. |
 | `get_bbox` | `{ref}` | Get bounding box `{x, y, width, height}` in viewport pixels. Use for `click_coordinate` targeting. Read-only. |
 
-### Stealth
-| Action | Params | Description |
-|--------|--------|-------------|
-| `rotate_fingerprint` | `{geo?}` | Inject JS fingerprint overrides (UA, platform, hardware). Tier 1-2 only (Tier 3 manages natively). |
-
 ### Agent Guidance
 
-**Action cost**: `search_page`, `find_elements`, `get_downloads`, `get_value`, `get_attributes`, `get_bbox`, `cookies_export`, `rotate_fingerprint` are free (read-only, no rate limit). `extract` is expensive (full page parse). Page-changing actions (`navigate`, `click`, `dblclick`, `rightclick`, `fill`, `upload_file`, `click_coordinate`, `cookies_import`) count toward rate limits.
+**Action cost**: `search_page`, `find_elements`, `get_downloads`, `get_value`, `get_attributes`, `get_bbox`, `cookies_export` are free (read-only, no rate limit). `extract` is expensive (full page parse). Page-changing actions (`navigate`, `click`, `dblclick`, `rightclick`, `fill`, `upload_file`, `click_coordinate`, `cookies_import`) count toward rate limits.
 
 **Action chaining**: Put page-changing actions last. Safe to chain read-only actions before them.
 
-**Snapshot diff**: Elements are marked with prefixes showing what changed since last snapshot:
+**New element detection**: Elements new since last snapshot are prefixed with `*` in the ARIA tree:
 ```
 - button "Submit" @e1
-*- button "Confirm" @e2     <-- NEW (not in previous snapshot)
-~- heading "Updated Title" @e3     <-- CHANGED (name differs from previous)
-- textbox "Email" @e4
-
-[removed since last snapshot]
-  - button "Old Submit"
-  - link "Deprecated Link"
+*- button "Confirm" @e2     <-- NEW since last snapshot
+- textbox "Email" @e3
 ```
-`*` = new element, `~` = changed element. Removed elements listed at bottom (no refs — they're gone). Response includes `new_element_count`, `removed_element_count`, `changed_element_count`.
+New elements often appear after form interactions. Interact with them when relevant.
 
 **Loop detection**: The server detects repetitive action patterns. If you receive a `loop_warning` in the response:
 - **WARNING**: 3+ repetitions on same page — try a different approach
@@ -297,7 +277,7 @@ Tier 2+ sessions auto-enable humanized actions. Set `BROWSER_USE_HUMANIZE=1` to 
 
 When active:
 - **click**: Bezier curve mouse movement from actual cursor position, random offset, variable settle delay
-- **type**: Gaussian inter-key delays (80ms base), digraph optimization, occasional thinking pauses, typo injection (3% chance of wrong adjacent key → backspace → correct, at intensity >= 0.8)
+- **type**: Gaussian inter-key delays (80ms base), digraph optimization, occasional thinking pauses
 - **scroll**: Eased acceleration/deceleration, reading pauses after scroll
 
 Mouse position is tracked via page-level listener — Bezier curves start from real cursor position, not a fixed point.
@@ -318,7 +298,7 @@ Server enforces per-domain action rate limits (from `Config.SENSITIVE_RATE_LIMIT
 | x.com / twitter.com | 6/min |
 | instagram.com | 4/min |
 
-Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox, rotate_fingerprint) are exempt.
+Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox) are exempt.
 If rate limited, response includes `{"code": "RATE_LIMITED", "wait_seconds": N}`.
 
 ## Block Detection & CAPTCHA Solving
@@ -361,7 +341,7 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | Server | `scripts/server.py` | aiohttp HTTP server, auth, request routing, rate limiting, block detection |
 | Agent | `scripts/agent.py` | stdin/stdout JSON interface (alternative to server) |
 | Browser Engine | `scripts/browser_engine.py` | Multi-tier browser lifecycle, tracker blocking, session management, idle GC |
-| Actions | `scripts/actions.py` | Action dispatcher (35 actions) with humanization layer |
+| Actions | `scripts/actions.py` | Action dispatcher (34 actions) with humanization layer |
 | CAPTCHA Solver | `scripts/captcha_solver.py` | CapSolver + 2Captcha integration, sitekey extraction, token injection |
 | Behavior | `scripts/behavior.py` | Bezier mouse curves, Gaussian typing delays, eased scrolling |
 | Detection | `scripts/detection.py` | Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX), site profiles |

@@ -545,6 +545,104 @@ async def action_rightclick(page, params: dict, session: dict) -> dict:
         return {"success": False, "error": to_ai_friendly_error(e)}
 
 
+async def action_hover(page, params: dict, session: dict) -> dict:
+    """Hover over an element by ref."""
+    ref = params.get("ref")
+    if not ref:
+        return {"success": False, "error": "Missing required param: ref"}
+
+    ref_map = session.get("ref_map", {})
+    locator = await _resolve_ref(page, ref, ref_map)
+    if locator is None:
+        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+
+    try:
+        if session.get("humanize"):
+            hb = HumanBehavior(intensity=session.get("humanize_intensity", 1.0))
+            try:
+                await asyncio.wait_for(
+                    hb.move_to_element(page, locator, click=False),
+                    timeout=15.0,
+                )
+            except (asyncio.TimeoutError, Exception):
+                await locator.hover(timeout=10_000, force=True)
+        else:
+            try:
+                await locator.hover(timeout=10_000)
+            except Exception:
+                # Headless actionability fallback — force hover
+                await locator.hover(timeout=10_000, force=True)
+        await asyncio.sleep(0.3)
+        return {"success": True, "extracted_content": f"Hovered over {ref}"}
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+async def action_drag(page, params: dict, session: dict) -> dict:
+    """Drag one element to another."""
+    src_ref = params.get("source_ref") or params.get("ref")
+    tgt_ref = params.get("target_ref")
+    if not src_ref or not tgt_ref:
+        return {"success": False, "error": "Missing required params: source_ref, target_ref"}
+
+    ref_map = session.get("ref_map", {})
+    src_loc = await _resolve_ref(page, src_ref, ref_map)
+    tgt_loc = await _resolve_ref(page, tgt_ref, ref_map)
+    if src_loc is None:
+        return {"success": False, "error": f"Source ref {src_ref} not found. Take a new snapshot."}
+    if tgt_loc is None:
+        return {"success": False, "error": f"Target ref {tgt_ref} not found. Take a new snapshot."}
+
+    old_url = page.url
+    try:
+        await src_loc.drag_to(tgt_loc, timeout=10_000)
+        await asyncio.sleep(0.3)
+        new_url = page.url
+        return {
+            "success": True,
+            "extracted_content": f"Dragged {src_ref} to {tgt_ref}",
+            "page_changed": new_url != old_url,
+        }
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+async def action_check(page, params: dict, session: dict) -> dict:
+    """Check a checkbox (no-op if already checked)."""
+    ref = params.get("ref")
+    if not ref:
+        return {"success": False, "error": "Missing required param: ref"}
+
+    ref_map = session.get("ref_map", {})
+    locator = await _resolve_ref(page, ref, ref_map)
+    if locator is None:
+        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+
+    try:
+        await locator.check(timeout=10_000)
+        return {"success": True, "extracted_content": f"Checked {ref}"}
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+async def action_uncheck(page, params: dict, session: dict) -> dict:
+    """Uncheck a checkbox (no-op if already unchecked)."""
+    ref = params.get("ref")
+    if not ref:
+        return {"success": False, "error": "Missing required param: ref"}
+
+    ref_map = session.get("ref_map", {})
+    locator = await _resolve_ref(page, ref, ref_map)
+    if locator is None:
+        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+
+    try:
+        await locator.uncheck(timeout=10_000)
+        return {"success": True, "extracted_content": f"Unchecked {ref}"}
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
 async def action_press(page, params: dict, session: dict) -> dict:
     """Press a keyboard key, optionally focused on a ref."""
     key = params.get("key", "")
@@ -607,6 +705,27 @@ async def action_go_back(page, params: dict, session: dict) -> dict:
         return {
             "success": True,
             "extracted_content": f"Navigated back to {page.url}",
+            "page_changed": True,
+            "new_url": page.url,
+            "new_title": await page.title(),
+        }
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+async def action_go_forward(page, params: dict, session: dict) -> dict:
+    """Navigate forward. Returns failure if there is no forward history."""
+    old_url = page.url
+    try:
+        response = await page.go_forward(wait_until="domcontentloaded", timeout=30_000)
+        if response is None and page.url == old_url:
+            return {
+                "success": False,
+                "error": "No forward history to navigate to.",
+            }
+        return {
+            "success": True,
+            "extracted_content": f"Navigated forward to {page.url}",
             "page_changed": True,
             "new_url": page.url,
             "new_title": await page.title(),
@@ -1399,6 +1518,149 @@ async def action_get_downloads(page, params: dict, session: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Viewport & Capture (Bowser port)
+# ---------------------------------------------------------------------------
+
+
+async def action_resize(page, params: dict, session: dict) -> dict:
+    """Resize viewport to specified dimensions."""
+    width = params.get("width")
+    height = params.get("height")
+    if width is None or height is None:
+        return {"success": False, "error": "Missing required params: width, height"}
+    try:
+        width, height = int(width), int(height)
+    except (TypeError, ValueError):
+        return {"success": False, "error": "width and height must be integers"}
+    if width < 320 or height < 200 or width > 7680 or height > 4320:
+        return {"success": False, "error": "Dimensions out of range (320-7680 x 200-4320)"}
+
+    try:
+        await page.set_viewport_size({"width": width, "height": height})
+        return {"success": True, "extracted_content": f"Viewport resized to {width}x{height}"}
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+async def action_pdf(page, params: dict, session: dict) -> dict:
+    """Save page as PDF (base64-encoded). Headless Chromium only."""
+    try:
+        data = await page.pdf(
+            format=params.get("format", "A4"),
+            print_background=params.get("print_background", True),
+        )
+        b64 = base64.b64encode(data).decode("ascii")
+        return {
+            "success": True,
+            "pdf": b64,
+            "extracted_content": f"PDF generated ({len(data)} bytes)",
+        }
+    except Exception as e:
+        msg = str(e)
+        if "pdf" in msg.lower() and "headless" in msg.lower():
+            return {"success": False, "error": "PDF requires headless Chromium (not available in headed mode or Firefox)."}
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+# ---------------------------------------------------------------------------
+# Console & Storage (Bowser port)
+# ---------------------------------------------------------------------------
+
+
+async def action_console(page, params: dict, session: dict) -> dict:
+    """Get captured JS console messages.
+
+    Params:
+        level (str): Optional filter — "error", "warning", "log", "info", "debug".
+        clear (bool): Clear captured messages after retrieval (default false).
+    """
+    logs = session.get("console_logs", [])
+    level = params.get("level")
+    clear = params.get("clear", False)
+
+    filtered = logs if not level else [l for l in logs if l["type"] == level]
+
+    if clear:
+        logs.clear()
+
+    if not filtered:
+        return {"success": True, "extracted_content": "No console messages captured."}
+
+    lines = [f"[{l['type']}] {l['text']}" for l in filtered[-100:]]
+    return {
+        "success": True,
+        "extracted_content": "\n".join(lines),
+        "message_count": len(filtered),
+    }
+
+
+async def action_storage_get(page, params: dict, session: dict) -> dict:
+    """Get value(s) from localStorage or sessionStorage.
+
+    Params:
+        type (str): "local" (default) or "session".
+        key (str): Optional — specific key. If omitted, returns all entries as JSON.
+    """
+    store = params.get("type", "local")
+    key = params.get("key")
+
+    if store not in ("local", "session"):
+        return {"success": False, "error": "type must be 'local' or 'session'"}
+
+    js_obj = "localStorage" if store == "local" else "sessionStorage"
+
+    try:
+        if key:
+            value = await page.evaluate(f"{js_obj}.getItem({json.dumps(key)})")
+            if value is None:
+                return {"success": True, "extracted_content": f"Key '{key}' not found in {js_obj}."}
+            return {"success": True, "extracted_content": value}
+        else:
+            data = await page.evaluate(f"""(() => {{
+                const s = {js_obj};
+                const obj = {{}};
+                for (let i = 0; i < s.length; i++) {{
+                    const k = s.key(i);
+                    obj[k] = s.getItem(k);
+                }}
+                return JSON.stringify(obj);
+            }})()""")
+            return {"success": True, "extracted_content": data}
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+async def action_storage_set(page, params: dict, session: dict) -> dict:
+    """Set a value in localStorage or sessionStorage.
+
+    Params:
+        type (str): "local" (default) or "session".
+        key (str): Key to set.
+        value (str): Value to set.
+    """
+    store = params.get("type", "local")
+    key = params.get("key")
+    value = params.get("value")
+
+    if not key:
+        return {"success": False, "error": "Missing required param: key"}
+    if value is None:
+        return {"success": False, "error": "Missing required param: value"}
+    if store not in ("local", "session"):
+        return {"success": False, "error": "type must be 'local' or 'session'"}
+
+    js_obj = "localStorage" if store == "local" else "sessionStorage"
+
+    try:
+        await page.evaluate(
+            f"{js_obj}.setItem({json.dumps(key)}, {json.dumps(str(value))})"
+        )
+        return {"success": True, "extracted_content": f"Set {js_obj}.{key}"}
+    except Exception as e:
+        return {"success": False, "error": to_ai_friendly_error(e)}
+
+
+# ---------------------------------------------------------------------------
 # Stealth (fingerprint rotation)
 # ---------------------------------------------------------------------------
 
@@ -1511,6 +1773,20 @@ ACTION_HANDLERS: dict[str, ActionHandler] = {
     "get_downloads": action_get_downloads,
     # Coordinate Actions (Phase 2)
     "click_coordinate": action_click_coordinate,
+    # Interaction (Bowser port)
+    "hover": action_hover,
+    "drag": action_drag,
+    "check": action_check,
+    "uncheck": action_uncheck,
+    # Navigation & Viewport (Bowser port)
+    "go_forward": action_go_forward,
+    "resize": action_resize,
+    # Capture
+    "pdf": action_pdf,
+    # Console & Storage (Bowser port)
+    "console": action_console,
+    "storage_get": action_storage_get,
+    "storage_set": action_storage_set,
     # Stealth
     "rotate_fingerprint": action_rotate_fingerprint,
 }

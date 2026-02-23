@@ -764,6 +764,30 @@ def _setup_download_handler(context, session_data: dict, session_id: str) -> Non
 
 
 # ---------------------------------------------------------------------------
+# Console log capture
+# ---------------------------------------------------------------------------
+
+def _setup_console_handler(context, session_data: dict) -> None:
+    """Capture JS console messages for later retrieval via the console action."""
+    console_logs: list[dict] = []
+    session_data["console_logs"] = console_logs
+
+    def _on_console(msg):
+        console_logs.append({
+            "type": msg.type,
+            "text": msg.text[:2000],
+        })
+        # Keep only last 500 messages to prevent memory bloat
+        if len(console_logs) > 500:
+            del console_logs[:100]
+
+    # Register on all current and future pages
+    for p in context.pages:
+        p.on("console", _on_console)
+    context.on("page", lambda new_page: new_page.on("console", _on_console))
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -816,6 +840,7 @@ async def launch(
     _event_data: dict = {}
     _setup_popup_handler(context, _event_data)
     _setup_download_handler(context, _event_data, session_id)
+    _setup_console_handler(context, _event_data)
 
     from models import ActionLoopDetector
 
@@ -839,6 +864,7 @@ async def launch(
         "dismissed_popups": _event_data.get("dismissed_popups", []),
         "downloads": _event_data.get("downloads", []),
         "download_dir": _event_data.get("download_dir"),
+        "console_logs": _event_data.get("console_logs", []),
         "loop_detector": ActionLoopDetector(),
     }
 

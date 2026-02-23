@@ -165,6 +165,7 @@ async def handle_request_inner(request_data: dict) -> dict:
                 "webmcp_available": session_data.get("webmcp_available"),
                 "webmcp_tools": session_data.get("webmcp_tools", {}),
                 "downloads": session_data.get("downloads", []),
+                "console_logs": session_data.get("console_logs", []),
             }
 
             old_url = page.url
