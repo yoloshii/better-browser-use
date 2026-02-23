@@ -107,6 +107,8 @@ Dependencies auto-install on first use per tier.
 |--------|--------|-------------|
 | `navigate` | `{url}` | Go to URL |
 | `click` | `{ref}` | Click element by ref |
+| `dblclick` | `{ref}` | Double-click element by ref |
+| `rightclick` | `{ref}` | Right-click (context menu) element by ref |
 | `fill` | `{ref, value}` | Clear + fill (forms) |
 | `type` | `{ref, text, delay_ms?}` | Character-by-character typing (search, compose) |
 | `scroll` | `{direction, amount}` | `up`/`down`, pixels or `"page"` |
@@ -116,6 +118,8 @@ Dependencies auto-install on first use per tier.
 | `evaluate` | `{js}` | Execute JavaScript (requires `BROWSER_USE_EVALUATE=1`) |
 | `screenshot` | `{full_page?}` | Base64 PNG |
 | `snapshot` | `{compact?, max_depth?}` | ARIA tree + refs |
+| `done` | `{success?, result?}` | Mark task as complete with optional result text |
+| `solve_captcha` | `{}` | Auto-detect and solve CAPTCHA (CapSolver → 2Captcha fallback) |
 
 ### Tabs & Navigation
 
@@ -127,6 +131,8 @@ Dependencies auto-install on first use per tier.
 | `tab_close` | `{index}` | Close tab |
 | `cookies_get` | `{domain?}` | Get cookies |
 | `cookies_set` | `{cookies}` | Set cookies |
+| `cookies_export` | `{path, domain?}` | Export cookies to JSON file |
+| `cookies_import` | `{path}` | Import cookies from JSON file |
 
 ### Search & Discovery
 
@@ -135,6 +141,9 @@ Dependencies auto-install on first use per tier.
 | `search_page` | `{query, max_results?}` | Text search across visible page content. Case-insensitive. |
 | `find_elements` | `{text?, role?}` | Find refs matching criteria in current snapshot. |
 | `extract` | `{max_chars?, include_links?}` | Full page content as Markdown. |
+| `get_value` | `{ref}` | Get current value of input/textarea/select. |
+| `get_attributes` | `{ref}` | Get all HTML attributes of an element. |
+| `get_bbox` | `{ref}` | Get bounding box `{x, y, width, height}` in viewport coordinates. |
 
 ### WebMCP (Chrome 146+)
 
