@@ -777,7 +777,7 @@ async def launch(
 
     Args:
         tier: Stealth tier (1=Playwright, 2=Patchright, 3=Camoufox).
-        profile: Profile name to load (from ~/.browser-use/profiles/<name>/).
+        profile: Profile name to load (from ~/.openclaw/browser-profiles/<name>/).
         viewport: Override viewport dict.
         url: Navigate to this URL after launch.
 
@@ -1021,8 +1021,8 @@ async def close(session_id: str) -> dict:
         return {"success": False, "error": f"Teardown failed: {exc}"}
 
     # Resources released successfully — now clean up auxiliary state
-    from snapshot import clear_previous_refs
-    clear_previous_refs(session_id)
+    from snapshot import clear_previous_snapshots
+    clear_previous_snapshots(session_id)
 
     # Clean download temp dir
     download_dir = session.get("download_dir")

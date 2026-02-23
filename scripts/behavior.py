@@ -128,6 +128,18 @@ class HumanTyping:
         "ve", "co", "me", "de", "hi", "ri", "ro", "ic", "ne", "ea",
     }
 
+    # Typo simulation: probability and adjacent key map (QWERTY layout)
+    TYPO_PROBABILITY = 0.03  # 3% per character
+
+    ADJACENT_KEYS = {
+        "a": "sqwz", "b": "vghn", "c": "xdfv", "d": "sfec", "e": "wrd",
+        "f": "dgrc", "g": "fhtv", "h": "gjyn", "i": "uok", "j": "hkun",
+        "k": "jlim", "l": "kop", "m": "njk", "n": "bhmj", "o": "iplk",
+        "p": "ol", "q": "wa", "r": "eft", "s": "adwz", "t": "rgy",
+        "u": "yij", "v": "cfgb", "w": "qase", "x": "zsdc", "y": "thu",
+        "z": "xas",
+    }
+
     @classmethod
     def get_inter_key_delay(
         cls,
@@ -170,12 +182,27 @@ class HumanTyping:
         """Type text character-by-character with human-like timing.
 
         Uses page.keyboard.type() for each character individually,
-        applying realistic inter-key delays.
+        applying realistic inter-key delays. At intensity >= 0.8,
+        injects occasional typos (wrong adjacent key → backspace → correct).
         """
         prev_char = ""
         for char in text:
             delay = cls.get_inter_key_delay(char, prev_char, intensity)
             await asyncio.sleep(delay / 1000)
+
+            # Typo injection: wrong key → notice pause → backspace → correct key
+            lower = char.lower()
+            if (intensity >= 0.8
+                    and lower in cls.ADJACENT_KEYS
+                    and random.random() < cls.TYPO_PROBABILITY):
+                wrong = random.choice(cls.ADJACENT_KEYS[lower])
+                if char.isupper():
+                    wrong = wrong.upper()
+                await page.keyboard.type(wrong)
+                await asyncio.sleep(random.uniform(0.15, 0.4) * intensity)
+                await page.keyboard.press("Backspace")
+                await asyncio.sleep(random.uniform(0.05, 0.15) * intensity)
+
             await page.keyboard.type(char)
             prev_char = char
 

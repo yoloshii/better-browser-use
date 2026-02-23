@@ -1172,7 +1172,7 @@ async def action_extract(page, params: dict, session: dict) -> dict:
     except ImportError:
         return {
             "success": False,
-            "error": "markdownify not installed. Run: pip install markdownify",
+            "error": "markdownify not installed. Run: uv pip install markdownify",
         }
 
     try:
@@ -1399,6 +1399,73 @@ async def action_get_downloads(page, params: dict, session: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Stealth (fingerprint rotation)
+# ---------------------------------------------------------------------------
+
+async def action_rotate_fingerprint(page, params: dict, session: dict) -> dict:
+    """Rotate browser fingerprint via JS injection (Tier 1-2 only).
+
+    Tier 3 (Camoufox) manages fingerprints natively.
+    Uses FingerprintManager for consistent, geo-aware profiles per domain.
+    Note: Tier 2 (Patchright) does not persist across navigation due to
+    add_init_script breaking DNS in Chrome 143+.
+    """
+    tier = session.get("tier", 1)
+    if tier == 3:
+        return {
+            "success": True,
+            "extracted_content": "Tier 3 (Camoufox) manages fingerprints natively — no action needed.",
+        }
+
+    from fingerprint import FingerprintManager
+    from urllib.parse import urlparse
+    domain = urlparse(page.url).netloc
+    geo = params.get("geo", "us")
+
+    mgr = FingerprintManager()
+    fp = mgr.get_or_create(domain, geo)
+
+    # Build language list from accept_language header
+    langs = [part.split(";")[0].strip() for part in fp.accept_language.split(",")]
+    primary_lang = langs[0] if langs else "en-US"
+
+    # Hardware variance (consistent per fingerprint via domain seed)
+    hw_concurrency = random.choice([4, 6, 8, 12])
+    device_memory = random.choice([4, 8, 16])
+
+    js = (
+        "(() => {"
+        f"Object.defineProperty(navigator,'userAgent',{{get:()=>'{fp.user_agent}'}});"
+        f"Object.defineProperty(navigator,'platform',{{get:()=>'{fp.platform}'}});"
+        f"Object.defineProperty(navigator,'language',{{get:()=>'{primary_lang}'}});"
+        f"Object.defineProperty(navigator,'languages',{{get:()=>{json.dumps(langs)}}});"
+        f"Object.defineProperty(navigator,'hardwareConcurrency',{{get:()=>{hw_concurrency}}});"
+        f"Object.defineProperty(navigator,'deviceMemory',{{get:()=>{device_memory}}});"
+        "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+        "return true;"
+        "})()"
+    )
+
+    try:
+        await page.evaluate(js)
+        # Persist across navigation for Tier 1 only
+        # Tier 2 (Patchright): add_init_script breaks DNS in Chrome 143+
+        if tier == 1:
+            await page.context.add_init_script(js)
+        return {
+            "success": True,
+            "extracted_content": (
+                f"Fingerprint rotated: {fp.browser} {fp.browser_version} on {fp.platform} "
+                f"(domain: {domain}, geo: {geo})"
+                + ("" if tier == 1 else " [current page only — Tier 2 no init_script]")
+            ),
+            "fingerprint_id": fp.fingerprint_id,
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Fingerprint rotation failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Action registry
 # ---------------------------------------------------------------------------
 
@@ -1444,6 +1511,8 @@ ACTION_HANDLERS: dict[str, ActionHandler] = {
     "get_downloads": action_get_downloads,
     # Coordinate Actions (Phase 2)
     "click_coordinate": action_click_coordinate,
+    # Stealth
+    "rotate_fingerprint": action_rotate_fingerprint,
 }
 
 

@@ -19,6 +19,7 @@ EXEMPT_ACTIONS = frozenset({
     "webmcp_discover", "webmcp_call",
     "search_page", "find_elements", "extract", "get_downloads",
     "get_value", "get_attributes", "get_bbox",
+    "rotate_fingerprint",
 })
 
 

@@ -151,6 +151,25 @@ Dependencies auto-install on first use per tier.
 | `get_downloads` | `{}` | List files downloaded in this session. |
 | `click_coordinate` | `{x, y}` | Click at viewport coordinates (last resort for non-ARIA elements). |
 
+### Stealth
+
+| Action | Params | Description |
+|--------|--------|-------------|
+| `rotate_fingerprint` | `{geo?}` | Inject JS to rotate navigator fingerprint (Tier 1-2 only; Tier 3 Camoufox handles natively). |
+
+## Batch Actions
+
+Execute multiple actions in a single request with `op: "actions"`:
+
+```json
+{"op": "actions", "session_id": "<id>", "actions": [
+  {"action": "navigate", "params": {"url": "https://example.com"}},
+  {"action": "snapshot", "params": {}}
+], "stop_on_error": true}
+```
+
+Returns `{"success": true, "results": [...], "stopped_at": null}`. Max 20 actions per batch. Ref maps propagate between steps.
+
 ## ARIA Snapshots & Refs
 
 Pages are observed through ARIA accessibility trees, not raw HTML. Each interactive element gets a ref (`@e1`, `@e2`, ...):
@@ -174,12 +193,18 @@ Use refs in actions: `{"action": "fill", "params": {"ref": "@e2", "value": "user
 
 Refs reset on every new snapshot. If an action returns "ref not found", take a new snapshot.
 
-**New element detection**: Elements that appeared since the previous snapshot are prefixed with `*` in the tree:
+**Snapshot diff**: Changes since the previous snapshot are marked in the tree:
 ```
 - button "Submit" @e1
 *- button "Confirm" @e2     <-- NEW since last snapshot
-- textbox "Email" @e3
+~- button "Updated" @e3     <-- CHANGED (same element, different name)
+- textbox "Email" @e4
+
+[removed since last snapshot]
+  - link "Old Link"         <-- REMOVED
 ```
+
+Response includes `new_element_count`, `changed_element_count`, and `removed_element_count`.
 
 ## Loop Detection
 
@@ -210,7 +235,7 @@ Tier 2+ auto-enable human-like behavior simulation. Force for Tier 1 with `BROWS
 | Action | Humanized Behavior |
 |--------|-------------------|
 | **click** | Bezier curve mouse movement from tracked cursor position, random offset within bounding box, variable settle delay (200-500ms) |
-| **type** | Gaussian inter-key delays (~80ms base), digraph optimization (common letter pairs typed faster), occasional thinking pauses |
+| **type** | Gaussian inter-key delays (~80ms base), digraph optimization (common letter pairs typed faster), occasional thinking pauses, 3% typo injection at high intensity (wrong adjacent key → backspace → correct key) |
 | **scroll** | Eased acceleration/deceleration, simulated reading pauses between scroll bursts |
 
 Mouse position is tracked via a page-level listener — Bezier curves start from actual cursor position, not a fixed point.
@@ -283,7 +308,7 @@ Per-domain action rate limits protect against detection:
 | x.com / twitter.com | 6/min |
 | instagram.com | 4/min |
 
-Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox, solve_captcha) are exempt. When rate limited:
+Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox, solve_captcha, rotate_fingerprint) are exempt. When rate limited:
 
 ```json
 {"success": false, "code": "RATE_LIMITED", "wait_seconds": 8.2}
@@ -380,12 +405,12 @@ scripts/
   server.py            # aiohttp HTTP server, auth, routing, rate limiting, block detection, loop detection
   agent.py             # stdin/stdout JSON interface (alternative to server)
   browser_engine.py    # Multi-tier browser lifecycle, tracker blocking, WebMCP init, popup/download handlers
-  actions.py           # Action dispatcher (34 actions) with humanization layer
-  behavior.py          # Bezier mouse curves, Gaussian typing delays, eased scrolling
+  actions.py           # Action dispatcher (35 actions) with humanization layer
+  behavior.py          # Bezier mouse curves, Gaussian typing delays, eased scrolling, typo injection
   detection.py         # Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX)
   fingerprint.py       # SQLite-backed fingerprint persistence, rotation on block rate
   rate_limiter.py      # Per-domain sliding window rate limiter
-  snapshot.py          # ARIA tree parser, ref assignment, new-element detection
+  snapshot.py          # ARIA tree parser, ref assignment, snapshot diff (new/changed/removed)
   session.py           # Profile persistence (cookies/storage/fingerprints)
   agent_fsm.py         # State machine for agent loop
   context_compaction.py # LLM history summarization for long sessions

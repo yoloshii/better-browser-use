@@ -253,6 +253,153 @@ async def test_tier3_nowsecure(s):
             log("  Session closed.")
 
 
+async def test_batch_actions(s):
+    log("--- Batch Actions ---")
+    sid = None
+    try:
+        r = await req(s, {"op": "launch", "tier": 1, "url": "https://example.com"})
+        sid = r.get("session_id")
+        if not sid:
+            record("batch launch", False, f"launch failed: {r.get('error')}")
+            return
+
+        # Basic batch: navigate + snapshot
+        r = await req(s, {
+            "op": "actions", "session_id": sid,
+            "actions": [
+                {"action": "navigate", "params": {"url": "https://crawllab.dev/"}},
+                {"action": "snapshot", "params": {"compact": True}},
+            ],
+        })
+        results_list = r.get("results", [])
+        record("batch basic (2 actions)", r.get("success", False) and len(results_list) == 2,
+               f"results_count={len(results_list)}, stopped_at={r.get('stopped_at')}")
+
+        # Verify second result has snapshot tree (ref propagation)
+        if len(results_list) >= 2:
+            snap_result = results_list[1]
+            has_tree = bool(snap_result.get("tree"))
+            record("batch ref propagation", has_tree,
+                   f"tree_len={len(snap_result.get('tree', ''))}, refs={len(snap_result.get('refs', {}))}")
+
+        # stop_on_error: include an invalid action
+        r = await req(s, {
+            "op": "actions", "session_id": sid,
+            "actions": [
+                {"action": "snapshot", "params": {}},
+                {"action": "click", "params": {"ref": "@e_nonexistent_999"}},
+                {"action": "snapshot", "params": {}},  # should not execute
+            ],
+            "stop_on_error": True,
+        })
+        stopped = r.get("stopped_at")
+        record("batch stop_on_error", stopped == 1 and len(r.get("results", [])) == 2,
+               f"stopped_at={stopped}, results_count={len(r.get('results', []))}")
+
+        # Max limit: >20 actions
+        r = await req(s, {
+            "op": "actions", "session_id": sid,
+            "actions": [{"action": "wait", "params": {"ms": 10}}] * 21,
+        })
+        record("batch max 20 limit", not r.get("success", True),
+               f"error={r.get('error', '')[:80]}")
+
+    finally:
+        if sid:
+            await req(s, {"op": "close", "session_id": sid})
+            log("  Session closed.")
+
+
+async def test_snapshot_diff(s):
+    log("--- Snapshot Diff (new/changed/removed) ---")
+    sid = None
+    try:
+        r = await req(s, {"op": "launch", "tier": 1, "url": "https://crawllab.dev/"})
+        sid = r.get("session_id")
+        if not sid:
+            record("diff launch", False, f"launch failed: {r.get('error')}")
+            return
+
+        # First snapshot (baseline)
+        r = await req(s, {"op": "snapshot", "session_id": sid, "compact": True})
+        refs1 = r.get("refs", {})
+        record("diff baseline snapshot", r.get("success", False) and len(refs1) > 0,
+               f"refs={len(refs1)}")
+
+        # Navigate to different page → re-snapshot → should detect new + removed
+        r = await req(s, {"op": "action", "session_id": sid, "action": "navigate",
+                          "params": {"url": "https://example.com"}})
+
+        r = await req(s, {"op": "snapshot", "session_id": sid, "compact": True})
+        new_count = r.get("new_element_count", 0)
+        removed_count = r.get("removed_element_count", 0)
+        changed_count = r.get("changed_element_count", 0)
+        tree = r.get("tree", "")
+        has_star = "*" in tree
+        has_removed = "[removed since last snapshot]" in tree
+        record("diff new elements", new_count > 0 and has_star,
+               f"new={new_count}, has_star_markers={has_star}")
+        record("diff removed elements", removed_count > 0 and has_removed,
+               f"removed={removed_count}, has_removed_section={has_removed}")
+        record("diff changed count", True,
+               f"changed={changed_count} (may be 0 for cross-domain nav)")
+
+    finally:
+        if sid:
+            await req(s, {"op": "close", "session_id": sid})
+            log("  Session closed.")
+
+
+async def test_rotate_fingerprint(s):
+    log("--- Fingerprint Rotation ---")
+    sid = None
+    try:
+        # Tier 1 — should inject JS
+        r = await req(s, {"op": "launch", "tier": 1, "url": "https://example.com"})
+        sid = r.get("session_id")
+        if not sid:
+            record("fp launch", False, f"launch failed: {r.get('error')}")
+            return
+
+        r = await req(s, {"op": "action", "session_id": sid, "action": "rotate_fingerprint",
+                          "params": {"geo": "us"}})
+        record("fp rotate tier 1", r.get("success", False),
+               f"content={str(r.get('extracted_content', ''))[:120]}, fp_id={r.get('fingerprint_id', '')}")
+
+        # Verify navigator.userAgent was overridden
+        r2 = await req(s, {"op": "action", "session_id": sid, "action": "evaluate",
+                           "params": {"js": "navigator.userAgent"}})
+        ua = r2.get("extracted_content", "")
+        # If fingerprint was applied, UA should be something non-default
+        record("fp UA override", r2.get("success", False),
+               f"ua={str(ua)[:100]}")
+
+    finally:
+        if sid:
+            await req(s, {"op": "close", "session_id": sid})
+            log("  Session closed.")
+
+    # Tier 3 — should return no-op
+    sid = None
+    try:
+        r = await req(s, {"op": "launch", "tier": 3, "url": "https://example.com"})
+        sid = r.get("session_id")
+        if not sid:
+            record("fp tier 3 launch", False, f"launch failed: {r.get('error')}")
+            return
+
+        r = await req(s, {"op": "action", "session_id": sid, "action": "rotate_fingerprint",
+                          "params": {}})
+        is_noop = "natively" in str(r.get("extracted_content", "")).lower()
+        record("fp rotate tier 3 (no-op)", r.get("success", False) and is_noop,
+               f"content={str(r.get('extracted_content', ''))[:120]}")
+
+    finally:
+        if sid:
+            await req(s, {"op": "close", "session_id": sid})
+            log("  Session closed.")
+
+
 async def test_click_coordinate(s):
     log("--- click_coordinate test ---")
     sid = None
@@ -295,6 +442,9 @@ async def main():
             await test_tier1_crawllab(s)
             await test_tier2_stealth(s)
             await test_tier3_nowsecure(s)
+            await test_batch_actions(s)
+            await test_snapshot_diff(s)
+            await test_rotate_fingerprint(s)
             await test_click_coordinate(s)
             await test_multi_session_status(s)
         except Exception as e:

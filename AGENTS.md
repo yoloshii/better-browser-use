@@ -1,6 +1,6 @@
 # better-browser-use
 
-HTTP-based browser automation server (port 8500) with ARIA snapshot navigation, 3 stealth tiers, 34 actions, WebMCP support, and human-like behavior simulation.
+HTTP-based browser automation server (port 8500) with ARIA snapshot navigation, 3 stealth tiers, 35 actions, WebMCP support, and human-like behavior simulation.
 
 ## Running
 
@@ -55,6 +55,8 @@ Element has no ARIA role?
 | `blocked: true` | Anti-bot detected | Escalate tier or try different approach |
 | `loop_warning` | Repetitive action detected | Change approach (see warning level) |
 | `new_element_count` | Elements appeared since last snapshot | Check `*`-prefixed items in tree |
+| `changed_element_count` | Elements changed since last snapshot | Check `~`-prefixed items in tree |
+| `removed_element_count` | Elements removed since last snapshot | Check `[removed since last snapshot]` section |
 | `code: RATE_LIMITED` | Too many actions on domain | Wait `wait_seconds`, then retry |
 
 ## Common Patterns
@@ -91,8 +93,8 @@ webmcp_call toolName {field1: "val", field2: "val"} → done
 |------|---------|
 | `scripts/server.py` | HTTP server, routing, loop detection, popup/download surfacing |
 | `scripts/browser_engine.py` | Browser lifecycle, WebMCP init script, popup/download handlers |
-| `scripts/actions.py` | 32 action handlers with humanization |
-| `scripts/snapshot.py` | ARIA tree parser, ref assignment, new-element detection |
+| `scripts/actions.py` | 35 action handlers with humanization |
+| `scripts/snapshot.py` | ARIA tree parser, ref assignment, snapshot diff (new/changed/removed) |
 | `scripts/models.py` | Pydantic models, PageFingerprint, ActionLoopDetector |
 | `scripts/config.py` | All settings and env vars |
 | `scripts/behavior.py` | Bezier mouse, Gaussian typing, eased scrolling |
@@ -109,7 +111,7 @@ webmcp_call toolName {field1: "val", field2: "val"} → done
 
 ## Rate Limiting
 
-Social media sites have lower limits (4-6/min). Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox) are exempt.
+Social media sites have lower limits (4-6/min). Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox, rotate_fingerprint) are exempt.
 
 ## Proxy Configuration
 

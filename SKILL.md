@@ -57,7 +57,7 @@ curl -s -X POST http://127.0.0.1:8500/ -H 'Content-Type: application/json' \
 
 Persistent HTTP server on port 8500. All requests: `POST /` with JSON body.
 
-Server binds `127.0.0.1` by default. Set `BROWSER_USE_TOKEN` to any secret string for Bearer auth (this is your own server token, not an official browser-use API key). Set `BROWSER_USE_EVALUATE=1` to enable arbitrary JS execution.
+Server binds `127.0.0.1` by default. Set `BROWSER_USE_TOKEN` for Bearer auth. Set `BROWSER_USE_EVALUATE=1` to enable arbitrary JS execution.
 
 ```bash
 # Health check (no auth required)
@@ -70,7 +70,7 @@ curl -s -X POST http://127.0.0.1:8500/ \
   -d '<json>'
 
 # Start server
-BROWSER_USE_TOKEN=<secret> python scripts/server.py --port 8500
+BROWSER_USE_TOKEN=<secret> ~/.venvs/scraper/bin/python3 ~/sirus-skills/browser-use/scripts/server.py --port 8500
 
 # Stop
 pkill -f 'server.py --port 8500'
@@ -142,6 +142,16 @@ Returns: `{success, extracted_content, error, page_changed, new_url}`
 ```
 Returns: `{success, screenshot}` (base64 PNG)
 
+### Batch Actions
+```json
+{"op": "actions", "session_id": "<id>", "actions": [
+  {"action": "click", "params": {"ref": "@e1"}},
+  {"action": "type", "params": {"ref": "@e2", "text": "hello"}},
+  {"action": "press", "params": {"key": "Enter"}}
+], "stop_on_error": true}
+```
+Returns: `{success, results: [...], stopped_at: null|index}`. Max 20 actions per batch. Each action runs the full pipeline (rate limit, loop detect, block detect). Ref maps propagate between steps. `stop_on_error` (default `true`) halts batch on first failure.
+
 ### Save / Close / Status / Profile
 ```json
 {"op": "save", "session_id": "<id>", "profile": "my-identity"}
@@ -171,7 +181,7 @@ Returns: `{success, screenshot}` (base64 PNG)
 | `wait` | `{ms?, selector?, text?, state?, timeout?}` | Wait for time, selector, or text. `state`: visible\|hidden\|attached (default: visible). Max 30s. |
 | `evaluate` | `{js}` | Execute JavaScript (requires BROWSER_USE_EVALUATE=1) |
 | `done` | `{result, success?}` | Mark task complete |
-| `solve_captcha` | `{}` | Auto-detect + solve CAPTCHA on page (optional, requires API keys) |
+| `solve_captcha` | `{}` | Auto-detect + solve CAPTCHA on page (CapSolver → 2Captcha fallback) |
 
 ### Extended
 | Action | Params | Description |
@@ -216,19 +226,29 @@ WebMCP tools appear in snapshot headers after discovery. Use `webmcp_call` inste
 | `get_attributes` | `{ref}` | Get all HTML attributes + tag name (`_tag`). Read-only. |
 | `get_bbox` | `{ref}` | Get bounding box `{x, y, width, height}` in viewport pixels. Use for `click_coordinate` targeting. Read-only. |
 
+### Stealth
+| Action | Params | Description |
+|--------|--------|-------------|
+| `rotate_fingerprint` | `{geo?}` | Inject JS fingerprint overrides (UA, platform, hardware). Tier 1-2 only (Tier 3 manages natively). |
+
 ### Agent Guidance
 
-**Action cost**: `search_page`, `find_elements`, `get_downloads`, `get_value`, `get_attributes`, `get_bbox`, `cookies_export` are free (read-only, no rate limit). `extract` is expensive (full page parse). Page-changing actions (`navigate`, `click`, `dblclick`, `rightclick`, `fill`, `upload_file`, `click_coordinate`, `cookies_import`) count toward rate limits.
+**Action cost**: `search_page`, `find_elements`, `get_downloads`, `get_value`, `get_attributes`, `get_bbox`, `cookies_export`, `rotate_fingerprint` are free (read-only, no rate limit). `extract` is expensive (full page parse). Page-changing actions (`navigate`, `click`, `dblclick`, `rightclick`, `fill`, `upload_file`, `click_coordinate`, `cookies_import`) count toward rate limits.
 
 **Action chaining**: Put page-changing actions last. Safe to chain read-only actions before them.
 
-**New element detection**: Elements new since last snapshot are prefixed with `*` in the ARIA tree:
+**Snapshot diff**: Elements are marked with prefixes showing what changed since last snapshot:
 ```
 - button "Submit" @e1
-*- button "Confirm" @e2     <-- NEW since last snapshot
-- textbox "Email" @e3
+*- button "Confirm" @e2     <-- NEW (not in previous snapshot)
+~- heading "Updated Title" @e3     <-- CHANGED (name differs from previous)
+- textbox "Email" @e4
+
+[removed since last snapshot]
+  - button "Old Submit"
+  - link "Deprecated Link"
 ```
-New elements often appear after form interactions. Interact with them when relevant.
+`*` = new element, `~` = changed element. Removed elements listed at bottom (no refs — they're gone). Response includes `new_element_count`, `removed_element_count`, `changed_element_count`.
 
 **Loop detection**: The server detects repetitive action patterns. If you receive a `loop_warning` in the response:
 - **WARNING**: 3+ repetitions on same page — try a different approach
@@ -262,7 +282,7 @@ File downloads are auto-saved to a session temp directory. Check downloads via `
 
 Profiles store identity state across sessions:
 ```
-~/.browser-use/profiles/<name>/
+~/.openclaw/browser-profiles/<name>/
 ├── cookies.json
 ├── storage.json    (localStorage + sessionStorage)
 ├── meta.json       (tier, domain, timestamps)
@@ -277,7 +297,7 @@ Tier 2+ sessions auto-enable humanized actions. Set `BROWSER_USE_HUMANIZE=1` to 
 
 When active:
 - **click**: Bezier curve mouse movement from actual cursor position, random offset, variable settle delay
-- **type**: Gaussian inter-key delays (80ms base), digraph optimization, occasional thinking pauses
+- **type**: Gaussian inter-key delays (80ms base), digraph optimization, occasional thinking pauses, typo injection (3% chance of wrong adjacent key → backspace → correct, at intensity >= 0.8)
 - **scroll**: Eased acceleration/deceleration, reading pauses after scroll
 
 Mouse position is tracked via page-level listener — Bezier curves start from real cursor position, not a fixed point.
@@ -298,7 +318,7 @@ Server enforces per-domain action rate limits (from `Config.SENSITIVE_RATE_LIMIT
 | x.com / twitter.com | 6/min |
 | instagram.com | 4/min |
 
-Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox) are exempt.
+Read-only actions (snapshot, screenshot, cookies_get, cookies_export, search_page, find_elements, extract, get_downloads, get_value, get_attributes, get_bbox, rotate_fingerprint) are exempt.
 If rate limited, response includes `{"code": "RATE_LIMITED", "wait_seconds": N}`.
 
 ## Block Detection & CAPTCHA Solving
@@ -308,15 +328,9 @@ If blocked, response includes `{"blocked": true, "protection": "<type>"}`.
 
 Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic.
 
-**Auto-solve (optional)**: When CAPTCHA/Cloudflare is detected and solver API keys are configured, the server automatically attempts to solve it inline. On success: `{"blocked": false, "captcha_solved": true, "solver": "capsolver", "solve_time_s": 3.2}`. On failure: `{"blocked": true, "captcha_solve_failed": true}`.
+**Auto-solve**: When CAPTCHA/Cloudflare is detected and `CAPSOLVER_API_KEY` is set, the server automatically attempts to solve it inline. On success: `{"blocked": false, "captcha_solved": true, "solver": "capsolver", "solve_time_s": 3.2}`. On failure: `{"blocked": true, "captcha_solve_failed": true}`.
 
 **Manual solve**: Use `{"action": "solve_captcha"}` to explicitly trigger solving on any page with a CAPTCHA. Supports reCAPTCHA v2/v3, hCaptcha, Cloudflare Turnstile.
-
-**Solver tiers** (pay-as-you-go):
-1. **CapSolver** (`CAPSOLVER_API_KEY`) — AI-based, fast (1-10s), ~$1-3/1000 solves
-2. **2Captcha** (`TWOCAPTCHA_API_KEY`) — Human fallback, slower (10-30s), broadest coverage
-
-No API keys configured = CAPTCHA solving disabled (no errors, feature simply inactive).
 
 ## Error Handling
 
@@ -344,10 +358,10 @@ No API keys configured = CAPTCHA solving disabled (no errors, feature simply ina
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| Server | `scripts/server.py` | aiohttp HTTP server, auth, request routing, rate limiting, block detection, loop detection |
+| Server | `scripts/server.py` | aiohttp HTTP server, auth, request routing, rate limiting, block detection |
 | Agent | `scripts/agent.py` | stdin/stdout JSON interface (alternative to server) |
-| Browser Engine | `scripts/browser_engine.py` | Multi-tier browser lifecycle, tracker blocking, WebMCP init, popup/download handlers, session management, idle GC |
-| Actions | `scripts/actions.py` | Action dispatcher (34 actions) with humanization layer |
+| Browser Engine | `scripts/browser_engine.py` | Multi-tier browser lifecycle, tracker blocking, session management, idle GC |
+| Actions | `scripts/actions.py` | Action dispatcher (35 actions) with humanization layer |
 | CAPTCHA Solver | `scripts/captcha_solver.py` | CapSolver + 2Captcha integration, sitekey extraction, token injection |
 | Behavior | `scripts/behavior.py` | Bezier mouse curves, Gaussian typing delays, eased scrolling |
 | Detection | `scripts/detection.py` | Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX), site profiles |
@@ -359,24 +373,21 @@ No API keys configured = CAPTCHA solving disabled (no errors, feature simply ina
 | Compaction | `scripts/context_compaction.py` | LLM history summarization |
 | Errors | `scripts/errors.py` | Error classification with AI-friendly transforms |
 | Config | `scripts/config.py` | Settings, geo profiles, env vars |
-| Models | `scripts/models.py` | Pydantic v2 type definitions, loop detection, page fingerprinting |
+| Models | `scripts/models.py` | Pydantic v2 type definitions |
 
 ## Configuration
 
 | Env Variable | Default | Description |
 |-------------|---------|-------------|
-| `BROWSER_USE_TOKEN` | (empty) | Your server's auth token (any string you choose). Not the official browser-use cloud key — no external account needed. |
+| `BROWSER_USE_TOKEN` | (empty) | Bearer auth token for server. Omit to disable auth. |
 | `BROWSER_USE_EVALUATE` | `1` | Set to `0` to disable `evaluate` (arbitrary JS) action |
 | `BROWSER_USE_HUMANIZE` | `0` | Set to `1` to force humanized actions on all tiers (Tier 2+ auto-enables) |
 | `BROWSER_USE_GEO` | (empty) | Geo profile for timezone/locale (e.g., `us`, `uk`, `de`, `jp`). See geo profiles below. |
 | `PROXY_SERVER` | (empty) | Proxy URL (e.g., `http://proxy:8080`). Used by Tier 2/3. |
 | `PROXY_USERNAME` | (empty) | Proxy auth username |
 | `PROXY_PASSWORD` | (empty) | Proxy auth password |
-| `CAPSOLVER_API_KEY` | (empty) | CapSolver API key for CAPTCHA solving (optional, fast AI solver) |
-| `TWOCAPTCHA_API_KEY` | (empty) | 2Captcha API key for CAPTCHA solving (optional, human fallback) |
-| `BROWSER_USE_WEBMCP` | `auto` | `auto` = detect, `1` = force Chrome channel, `0` = disable |
-| `BROWSER_USE_CHROME_CHANNEL` | (empty) | Chrome channel: `chrome-dev`, `chrome-beta`, `chrome-canary`, `chrome` |
-| `BROWSER_USE_CHROME_PATH` | (empty) | Explicit Chrome binary path (overrides channel) |
+| `CAPSOLVER_API_KEY` | (empty) | CapSolver API key for CAPTCHA solving (primary, fast AI) |
+| `TWOCAPTCHA_API_KEY` | (empty) | 2Captcha API key for CAPTCHA solving (fallback, human) |
 
 ### Geo Profiles
 
@@ -403,7 +414,6 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 - aiohttp (`pip install aiohttp`) — HTTP server
 - markdownify (`pip install markdownify`) — HTML→Markdown for `extract` action
 - pyee 13.x (`pip install 'pyee>=13,<14'`) — shared event emitter for Playwright + Patchright
-- python-dotenv (`pip install python-dotenv`) — optional, auto-loads `.env` file
 
 **Tier 1 — Playwright (Chromium):**
 - playwright 1.51.x (`pip install 'playwright>=1.51,<1.56' && playwright install chromium`)
@@ -424,38 +434,22 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 pip install 'pyee>=13,<14'
 pip install 'playwright>=1.51,<1.56' && playwright install chromium
 pip install patchright && patchright install chromium
-pip install aiohttp 'pydantic>=2.0' markdownify python-dotenv
+pip install aiohttp 'pydantic>=2.0' markdownify
 ```
 
 All tiers auto-install their browser binaries on first use if not already present.
 
-## Platform Notes: WSL2 and Virtual Machines
+## WSL2 Known Issues
 
-Tier 3 (Camoufox) relies on hardware-backed fingerprints — canvas rendering, WebGL pipeline, audio context — to pass advanced bot detection like Cloudflare Turnstile. Virtualized environments can produce inconsistent or synthetic fingerprints that these systems detect.
+| Issue | Tier | Symptom | Workaround |
+|-------|------|---------|------------|
+| Playwright 1.56+ hangs | 1 | `new_page()` never returns in headless mode | Pin `playwright>=1.51,<1.56` |
+| Tier 3 Turnstile failure | 3 | Camoufox passes launch but Cloudflare Turnstile never solves (90s poll, zero captures) | Run on native Linux VM via SSH |
+| Virtual GPU fingerprinting | 3 | WSL2's synthetic GPU/display stack produces fingerprints Turnstile detects as non-human | Native KVM VM passes; WSL2 does not |
 
-| Environment | Tier 1-2 | Tier 3 (Turnstile) | Notes |
-|-------------|----------|-------------------|-------|
-| Native Linux | OK | OK | Best fingerprint consistency |
-| macOS | OK | OK | Native GPU provides real fingerprints |
-| Windows (native) | OK | OK | Real GPU available |
-| WSL2 | OK | Unreliable | Virtual GPU (Microsoft Basic Render Driver) produces detectable fingerprints |
-| Docker (no GPU) | OK | Unreliable | No real GPU for canvas/WebGL |
-| Cloud VMs (shared GPU) | OK | Varies | Depends on GPU passthrough quality |
+**Tier 3 on WSL2 is unreliable for Turnstile-protected sites.** Camoufox generates hardware-backed fingerprints from the host GPU — WSL2's virtual GPU (Microsoft Basic Render Driver / vGPU) produces inconsistent canvas, WebGL, and audio fingerprints that Cloudflare detects. Tiers 1-2 work normally on WSL2 for non-Turnstile sites.
 
-**Symptoms of fingerprint detection:**
-- Turnstile widget loads but never solves (stays pending indefinitely)
-- Page shows "We couldn't verify if you are human" after 10-30s
-- Network captures show zero callbacks to the protected site's API
-
-**Known WSL2 issues:**
-- Playwright 1.56+: `new_page()` hangs in headless mode — pin to `>=1.51,<1.56`
-- Tier 3 + Cloudflare Turnstile: Camoufox launches fine but Turnstile never passes (0% success rate observed)
-
-**Workarounds:**
-- Run Tier 3 tasks on a native Linux or macOS host
-- If you only have WSL2, use a remote native Linux machine via SSH
-- For Turnstile specifically, a residential proxy improves pass rate on native hosts but does not fix the WSL2 fingerprint issue
-- Tiers 1-2 work normally on WSL2 for sites without Turnstile/advanced bot detection
+**If Tier 3 + Turnstile is required:** SSH to a native Linux VM and run the script there.
 
 ## WebMCP Integration
 
@@ -492,7 +486,16 @@ webmcp_discover → webmcp_call searchFlights {origin:"LON", destination:"NYC", 
 - Content reading / scrolling / navigation
 - Sites without WebMCP adoption (most of the web, for now)
 
+### Env Variables
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BROWSER_USE_WEBMCP` | `auto` | `auto` = detect, `1` = force Chrome channel, `0` = disable |
+| `BROWSER_USE_CHROME_CHANNEL` | (empty) | Chrome channel: `chrome-dev`, `chrome-beta`, `chrome-canary`, `chrome` |
+| `BROWSER_USE_CHROME_PATH` | (empty) | Explicit Chrome binary path (overrides channel) |
+
 ## Do NOT Use For
 
-- Simple URL scraping → use a dedicated scraper
+- Simple URL scraping → use `ultimate-scraper`
+- YouTube transcripts → use `youtube-transcript`
+- SEO audits → use `seo-crawler`
 - Direct API calls → use `curl` / HTTP

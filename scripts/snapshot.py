@@ -52,11 +52,11 @@ STRUCTURAL_ROLES = frozenset({
 _SKIP_PREFIXES = ("- /url:", "- /src:", "- /alt:")
 
 # ---------------------------------------------------------------------------
-# New-element detection (ported from browser-use star markers)
+# Snapshot diff: detect added, removed, and changed elements between snapshots
 # ---------------------------------------------------------------------------
 
-# Maps session_id -> set of "role:name:nth" identity strings from last snapshot
-_previous_ref_identities: dict[str, set[str]] = {}
+# Maps session_id -> {identity_string: ref_data_dict} from last snapshot
+_previous_ref_snapshots: dict[str, dict[str, dict]] = {}
 
 
 def _ref_identity(ref_data: dict) -> str:
@@ -67,9 +67,16 @@ def _ref_identity(ref_data: dict) -> str:
     return f"{role}:{name}:{nth}"
 
 
-def clear_previous_refs(session_id: str) -> None:
-    """Clear stored refs for a session (call on session close)."""
-    _previous_ref_identities.pop(session_id, None)
+def _ref_role_nth(ref_data: dict) -> str:
+    """Compute a role:nth key (without name) for change detection."""
+    role = ref_data.get("role", "")
+    nth = ref_data.get("nth", "")
+    return f"{role}:{nth}"
+
+
+def clear_previous_snapshots(session_id: str) -> None:
+    """Clear stored snapshot data for a session (call on session close)."""
+    _previous_ref_snapshots.pop(session_id, None)
 
 # Pattern: "- role "name" [attr=val]:" or "- role:" or "- role "name":"
 # Also handles: "- text: content" and "- /url: ..."
@@ -340,34 +347,77 @@ async def take_snapshot(
             }
             tree_text += f'\n- [cursor-interactive] "{el["text"]}" @{ref}'
 
-    # New-element detection: mark refs not seen in previous snapshot
+    # Snapshot diff: detect added, removed, and changed elements
     new_refs: set[str] = set()
+    changed_refs: set[str] = set()
+    removed_entries: list[dict] = []  # ref_data dicts for removed elements
     if session_id:
         current_identities = {
             ref_key: _ref_identity(ref_data)
             for ref_key, ref_data in refs.items()
         }
-        prev = _previous_ref_identities.get(session_id)
-        if prev is not None:
-            prev_set = prev
-            for ref_key, identity in current_identities.items():
-                if identity not in prev_set:
-                    new_refs.add(ref_key)
-        _previous_ref_identities[session_id] = set(current_identities.values())
+        current_id_set = set(current_identities.values())
+        prev_snapshot = _previous_ref_snapshots.get(session_id)
 
-    # Mark new elements with * prefix in tree output
-    if new_refs:
+        if prev_snapshot is not None:
+            prev_id_set = set(prev_snapshot.keys())
+
+            # New: identities in current but not in previous
+            for ref_key, identity in current_identities.items():
+                if identity not in prev_id_set:
+                    new_refs.add(ref_key)
+
+            # Removed: identities in previous but not in current
+            for identity, prev_data in prev_snapshot.items():
+                if identity not in current_id_set:
+                    removed_entries.append(prev_data)
+
+            # Changed: same role:nth but different name
+            curr_rn = {}  # role:nth -> (name, ref_key)
+            for ref_key, ref_data in refs.items():
+                rn = _ref_role_nth(ref_data)
+                curr_rn[rn] = (ref_data.get("name") or "", ref_key)
+            prev_rn = {}  # role:nth -> name
+            for _id, prev_data in prev_snapshot.items():
+                rn = _ref_role_nth(prev_data)
+                prev_rn[rn] = prev_data.get("name") or ""
+            for rn, (curr_name, ref_key) in curr_rn.items():
+                if rn in prev_rn and prev_rn[rn] != curr_name:
+                    # Exclude if ref_key is already in new_refs
+                    if ref_key not in new_refs:
+                        changed_refs.add(ref_key)
+
+        # Store current snapshot for next comparison
+        _previous_ref_snapshots[session_id] = {
+            _ref_identity(ref_data): dict(ref_data)
+            for ref_data in refs.values()
+        }
+
+    # Mark new (*) and changed (~) elements in tree output
+    mark_refs = new_refs | changed_refs
+    if mark_refs:
         marked_lines = []
         for line in tree_text.split("\n"):
-            # Use token-level matching to avoid @e1 matching @e10, @e11, etc.
             tokens = line.split()
-            if any(tok in new_refs for tok in tokens):
+            matched_new = any(tok in new_refs for tok in tokens)
+            matched_changed = any(tok in changed_refs for tok in tokens)
+            if matched_new or matched_changed:
                 stripped = line.lstrip()
                 indent = line[:len(line) - len(stripped)]
-                marked_lines.append(f"{indent}*{stripped}")
+                prefix = "*" if matched_new else "~"
+                marked_lines.append(f"{indent}{prefix}{stripped}")
             else:
                 marked_lines.append(line)
         tree_text = "\n".join(marked_lines)
+
+    # Append removed elements summary at end of tree
+    if removed_entries:
+        tree_text += "\n\n[removed since last snapshot]"
+        for entry in removed_entries[:10]:  # cap at 10 to avoid noise
+            role = entry.get("role", "?")
+            name = entry.get("name") or ""
+            name_part = f' "{name}"' if name else ""
+            tree_text += f"\n  - {role}{name_part}"
 
     # Build header
     url = page.url
@@ -395,6 +445,10 @@ async def take_snapshot(
     }
     if new_refs:
         result["new_element_count"] = len(new_refs)
+    if removed_entries:
+        result["removed_element_count"] = len(removed_entries)
+    if changed_refs:
+        result["changed_element_count"] = len(changed_refs)
     return result
 
 

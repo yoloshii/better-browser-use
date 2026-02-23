@@ -2,11 +2,11 @@
 """
 Lightweight HTTP server for browser-use skill.
 
-Keeps browser sessions alive between requests.
+Runs on VM 202, keeps browser sessions alive between requests.
 Exposes the same JSON API as agent.py but over HTTP.
 
 Usage:
-    python scripts/server.py [--port 8500]
+    ~/.venvs/scraper/bin/python3 ~/browser-use/scripts/server.py [--port 8500]
 
 All requests: POST / with JSON body (same format as agent.py stdin).
 """
@@ -102,7 +102,7 @@ async def handle_request_inner(request_data: dict) -> dict:
             url=request_data.get("url"),
         )
 
-    elif op == "action":
+    elif op in ("action", "actions"):
         import browser_engine
         import actions
         from rate_limiter import get_rate_limiter, EXEMPT_ACTIONS
@@ -111,13 +111,19 @@ async def handle_request_inner(request_data: dict) -> dict:
         if not session_id:
             return {"success": False, "error": "Missing session_id"}
 
-        async def _do_action():
+        async def _execute_single_action(
+            session_id: str,
+            action_name: str,
+            params: dict,
+            req_ref_map: dict | None = None,
+        ) -> dict:
+            """Execute one action with full pipeline (rate limit, loop detect, block detect).
+
+            Shared by single-action and batch-action handlers.
+            """
             page = await browser_engine.get_page(session_id)
             if page is None:
                 return {"success": False, "error": f"Session {session_id} not found or expired"}
-
-            action_name = request_data.get("action")
-            params = request_data.get("params", {})
 
             # Rate limiting (exempt read-only actions)
             if action_name not in EXEMPT_ACTIONS:
@@ -132,8 +138,8 @@ async def handle_request_inner(request_data: dict) -> dict:
                         "code": "RATE_LIMITED",
                         "wait_seconds": round(wait, 1),
                     }
+
             # Use request-provided ref_map, or fall back to server-side session ref_map
-            req_ref_map = request_data.get("ref_map")
             if req_ref_map:
                 ref_map = req_ref_map
             else:
@@ -205,7 +211,6 @@ async def handle_request_inner(request_data: dict) -> dict:
                 result["refs"] = session_ctx["ref_map"]
 
             # Lightweight block detection after page-changing actions
-            # Re-fetch active page in case tab changed during action
             if result.get("page_changed"):
                 try:
                     from detection import is_blocked
@@ -238,7 +243,47 @@ async def handle_request_inner(request_data: dict) -> dict:
 
             return result
 
-        return await _with_session_lock(session_id, _do_action)
+        if op == "action":
+            # Single action
+            async def _do_action():
+                return await _execute_single_action(
+                    session_id,
+                    request_data.get("action"),
+                    request_data.get("params", {}),
+                    req_ref_map=request_data.get("ref_map"),
+                )
+            return await _with_session_lock(session_id, _do_action)
+
+        else:
+            # Batch actions (op == "actions")
+            action_list = request_data.get("actions")
+            if not action_list or not isinstance(action_list, list):
+                return {"success": False, "error": "Missing or invalid 'actions' list"}
+            if len(action_list) > 20:
+                return {"success": False, "error": "Batch limited to 20 actions"}
+            stop_on_error = request_data.get("stop_on_error", True)
+
+            async def _do_batch():
+                results = []
+                stopped_at = None
+                for i, step in enumerate(action_list):
+                    a_name = step.get("action")
+                    a_params = step.get("params", {})
+                    if not a_name:
+                        r = {"success": False, "error": f"Action at index {i} missing 'action' field"}
+                    else:
+                        r = await _execute_single_action(session_id, a_name, a_params)
+                    results.append(r)
+                    if not r.get("success", False) and stop_on_error:
+                        stopped_at = i
+                        break
+                overall = stopped_at is None
+                out = {"success": overall, "results": results, "stopped_at": stopped_at}
+                if stopped_at is not None:
+                    out["error"] = results[stopped_at].get("error", "Action failed")
+                return out
+
+            return await _with_session_lock(session_id, _do_batch)
 
     elif op == "snapshot":
         import browser_engine
@@ -429,7 +474,7 @@ async def handle_request_inner(request_data: dict) -> dict:
         return {
             "success": False,
             "error": f"Unknown op: {op}. "
-                     "Valid: launch, action, snapshot, screenshot, close, save, status, profile, ping",
+                     "Valid: launch, action, actions, snapshot, screenshot, close, save, status, profile, ping",
         }
 
 
