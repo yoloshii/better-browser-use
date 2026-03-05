@@ -477,7 +477,5 @@ webmcp_discover → webmcp_call searchFlights {origin:"LON", destination:"NYC", 
 
 ## Do NOT Use For
 
-- Simple URL scraping → use `ultimate-scraper`
-- YouTube transcripts → use `youtube-transcript`
-- SEO audits → use `seo-crawler`
-- Direct API calls → use `curl` / HTTP
+- Simple URL scraping (use a lightweight HTTP client instead)
+- Direct API calls (use `curl` / HTTP directly)
