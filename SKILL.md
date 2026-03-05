@@ -169,7 +169,7 @@ Returns: `{success, screenshot}` (base64 PNG)
 | `snapshot` | `{compact?, max_depth?, cursor_interactive?}` | ARIA tree + refs |
 | `screenshot` | `{full_page?}` | Base64 PNG |
 | `wait` | `{ms?, selector?, text?, state?, timeout?}` | Wait for time, selector, or text. `state`: visible\|hidden\|attached (default: visible). Max 30s. |
-| `evaluate` | `{js}` | Execute JavaScript (requires BROWSER_USE_EVALUATE=1) |
+| `evaluate` | `{js, deep_query?, frame_url?}` | Execute JavaScript (requires BROWSER_USE_EVALUATE=1). Set `deep_query: true` to inject `deepQuery(sel)` / `deepQueryAll(sel)` helpers that pierce shadow DOM. |
 | `done` | `{result, success?}` | Mark task complete |
 | `solve_captcha` | `{}` | Auto-detect + solve CAPTCHA on page (CapSolver → 2Captcha fallback) |
 
@@ -229,6 +229,8 @@ WebMCP tools appear in snapshot headers after discovery. Use `webmcp_call` inste
 - textbox "Email" @e3
 ```
 New elements often appear after form interactions. Interact with them when relevant.
+
+**SPA re-detection**: After `navigate`, the server tracks the requested URL. If a subsequent `snapshot` sees a different URL (SPA client-side redirect, e.g. `x.com` → `x.com/home`), the response includes `{"spa_navigation": true, "spa_from": "...", "spa_to": "..."}`. The `navigate` response itself flags immediate redirects as `{"spa_redirect": true}`. Use this info to confirm you're on the expected page.
 
 **Loop detection**: The server detects repetitive action patterns. If you receive a `loop_warning` in the response:
 - **WARNING**: 3+ repetitions on same page — try a different approach
@@ -341,7 +343,7 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | Server | `scripts/server.py` | aiohttp HTTP server, auth, request routing, rate limiting, block detection |
 | Agent | `scripts/agent.py` | stdin/stdout JSON interface (alternative to server) |
 | Browser Engine | `scripts/browser_engine.py` | Multi-tier browser lifecycle, tracker blocking, session management, idle GC |
-| Actions | `scripts/actions.py` | Action dispatcher (34 actions) with humanization layer |
+| Actions | `scripts/actions.py` | Action dispatcher (45 actions) with humanization + shadow DOM piercing |
 | CAPTCHA Solver | `scripts/captcha_solver.py` | CapSolver + 2Captcha integration, sitekey extraction, token injection |
 | Behavior | `scripts/behavior.py` | Bezier mouse curves, Gaussian typing delays, eased scrolling |
 | Detection | `scripts/detection.py` | Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX), site profiles |

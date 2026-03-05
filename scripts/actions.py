@@ -23,6 +23,24 @@ from snapshot import take_snapshot
 # Type for action handlers
 ActionHandler = Callable[..., Coroutine[Any, Any, dict]]
 
+# Shadow DOM piercing helpers (injected into page context via evaluate).
+# deepQuery(sel)    — returns first match, recursing into shadow roots.
+# deepQueryAll(sel) — returns all matches across shadow roots.
+# Uses var (not function) so Playwright doesn't misinterpret the string
+# as a function definition when it starts with "function".
+DEEP_QUERY_JS = (
+    "var deepQuery=function(sel,root=document){"
+    "const el=root.querySelector(sel);if(el)return el;"
+    "for(const h of root.querySelectorAll('*')){"
+    "if(h.shadowRoot){const f=deepQuery(sel,h.shadowRoot);if(f)return f;}}"
+    "return null;};"
+    "var deepQueryAll=function(sel,root=document){"
+    "const r=[...root.querySelectorAll(sel)];"
+    "for(const h of root.querySelectorAll('*')){"
+    "if(h.shadowRoot)r.push(...deepQueryAll(sel,h.shadowRoot));}"
+    "return r;}"
+)
+
 
 # ---------------------------------------------------------------------------
 # Ref resolution
@@ -96,14 +114,22 @@ async def action_navigate(page, params: dict, session: dict) -> dict:
         return {"success": False, "error": "Missing required param: url"}
 
     try:
+        session["_last_nav_url"] = url
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
-        return {
+        final_url = page.url
+        result = {
             "success": True,
-            "extracted_content": f"Navigated to {page.url}",
+            "extracted_content": f"Navigated to {final_url}",
             "page_changed": True,
-            "new_url": page.url,
+            "new_url": final_url,
             "new_title": await page.title(),
         }
+        # SPA re-detection: if the page settled on a different URL than
+        # requested, flag it so the agent knows the final destination.
+        if final_url.rstrip("/") != url.rstrip("/"):
+            result["spa_redirect"] = True
+            result["extracted_content"] += f" (SPA redirected from {url})"
+        return result
     except Exception as e:
         return {
             "success": False,
@@ -285,6 +311,18 @@ async def action_snapshot(page, params: dict, session: dict) -> dict:
     if result.get("success"):
         session["ref_map"] = result.get("refs", {})
 
+    # SPA re-detection: compare current URL to last navigated URL.
+    # SPAs (e.g. x.com → x.com/home) redirect via JS after goto() returns.
+    last_nav = session.get("_last_nav_url")
+    if last_nav and result.get("success"):
+        current_url = page.url.rstrip("/")
+        if current_url != last_nav.rstrip("/"):
+            result["spa_navigation"] = True
+            result["spa_from"] = last_nav
+            result["spa_to"] = page.url
+            # Update so we only flag once per redirect
+            session["_last_nav_url"] = page.url
+
     return result
 
 
@@ -428,6 +466,8 @@ async def action_evaluate(page, params: dict, session: dict) -> dict:
     """Execute JavaScript on the page and return the result.
 
     Gated behind BROWSER_USE_EVALUATE env var (default: enabled).
+    Set deep_query=true to inject deepQuery()/deepQueryAll() helpers
+    that pierce shadow DOM boundaries.
     """
     from config import Config
 
@@ -440,6 +480,11 @@ async def action_evaluate(page, params: dict, session: dict) -> dict:
     js = params.get("js", "")
     if not js:
         return {"success": False, "error": "Missing required param: js"}
+
+    # Inject shadow DOM piercing helpers when requested.
+    # Wrapped in IIFE so var declarations + return are valid as an expression.
+    if params.get("deep_query"):
+        js = f"(function(){{ {DEEP_QUERY_JS}; {js} }})()"
 
     frame_url = params.get("frame_url", "")
     timeout_s = params.get("timeout_s", 30)

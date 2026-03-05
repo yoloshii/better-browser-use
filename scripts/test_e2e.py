@@ -499,6 +499,49 @@ async def test_bowser_actions(s):
             log("  Session closed.")
 
 
+async def test_shadow_dom_and_spa(s):
+    log("--- Shadow DOM piercing + SPA re-detection ---")
+    sid = None
+    try:
+        r = await req(s, {"op": "launch", "tier": 1, "url": "https://example.com"})
+        sid = r.get("session_id")
+        if not sid:
+            record("shadow/spa launch", False, f"launch failed: {r.get('error')}")
+            return
+
+        # deepQuery: query h1 through shadow DOM helpers
+        r = await req(s, {"op": "action", "session_id": sid, "action": "evaluate",
+                          "params": {"js": "return deepQuery('h1')?.textContent || 'not found'",
+                                     "deep_query": True}})
+        record("deep_query", r.get("success", False) and "Example" in r.get("extracted_content", ""),
+               f"content={r.get('extracted_content', '')[:80]}")
+
+        # deepQueryAll: find all paragraphs
+        r = await req(s, {"op": "action", "session_id": sid, "action": "evaluate",
+                          "params": {"js": "return deepQueryAll('p').length",
+                                     "deep_query": True}})
+        record("deep_query_all", r.get("success", False) and int(r.get("extracted_content", "0")) > 0,
+               f"p_count={r.get('extracted_content', '')}")
+
+        # SPA re-detection: navigate sets _last_nav_url, snapshot compares
+        r = await req(s, {"op": "action", "session_id": sid, "action": "navigate",
+                          "params": {"url": "https://crawllab.dev"}})
+        nav_spa = r.get("spa_redirect", False)
+        record("navigate spa_redirect flag", True,
+               f"spa_redirect={nav_spa}, final_url={r.get('new_url', '?')}")
+
+        # Snapshot after navigation — checks for SPA drift
+        r = await req(s, {"op": "snapshot", "session_id": sid, "compact": True})
+        record("snapshot spa_navigation", True,
+               f"spa_navigation={r.get('spa_navigation', False)}, "
+               f"from={r.get('spa_from', 'n/a')}, to={r.get('spa_to', 'n/a')}")
+
+    finally:
+        if sid:
+            await req(s, {"op": "close", "session_id": sid})
+            log("  Session closed.")
+
+
 async def test_click_coordinate(s):
     log("--- click_coordinate test ---")
     sid = None
@@ -545,6 +588,7 @@ async def main():
             await test_snapshot_diff(s)
             await test_rotate_fingerprint(s)
             await test_bowser_actions(s)
+            await test_shadow_dom_and_spa(s)
             await test_click_coordinate(s)
             await test_multi_session_status(s)
         except Exception as e:

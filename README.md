@@ -119,7 +119,7 @@ Dependencies auto-install on first use per tier.
 | `press` | `{key, ref?}` | Keyboard: `"Enter"`, `"Tab"`, `"Escape"` |
 | `select` | `{ref, value}` | Dropdown selection |
 | `wait` | `{ms}` | Explicit wait (max 30s) |
-| `evaluate` | `{js}` | Execute JavaScript (requires `BROWSER_USE_EVALUATE=1`) |
+| `evaluate` | `{js, deep_query?, frame_url?}` | Execute JavaScript. Set `deep_query: true` to inject `deepQuery(sel)` / `deepQueryAll(sel)` helpers that pierce shadow DOM boundaries. Requires `BROWSER_USE_EVALUATE=1`. |
 | `screenshot` | `{full_page?}` | Base64 PNG |
 | `snapshot` | `{compact?, max_depth?}` | ARIA tree + refs |
 | `done` | `{success?, result?}` | Mark task as complete with optional result text |
@@ -234,6 +234,15 @@ Refs reset on every new snapshot. If an action returns "ref not found", take a n
 ```
 
 Response includes `new_element_count`, `changed_element_count`, and `removed_element_count`.
+
+### SPA Re-detection
+
+SPAs (e.g., `x.com` → `x.com/home`) often redirect via JavaScript after `navigate` returns. The server detects this automatically:
+
+- **On `navigate`**: If the final URL differs from the requested URL, the response includes `spa_redirect: true` and the redirect is noted in `extracted_content`.
+- **On `snapshot`**: If the current URL differs from the last navigated URL, the response includes `spa_navigation: true`, `spa_from`, and `spa_to`. This catches delayed SPA routing that happens after the initial navigation completes.
+
+Use these signals to confirm you're on the expected page after navigation.
 
 ## Loop Detection
 

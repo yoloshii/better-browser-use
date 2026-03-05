@@ -166,10 +166,15 @@ async def handle_request_inner(request_data: dict) -> dict:
                 "webmcp_tools": session_data.get("webmcp_tools", {}),
                 "downloads": session_data.get("downloads", []),
                 "console_logs": session_data.get("console_logs", []),
+                "_last_nav_url": session_data.get("_last_nav_url"),
             }
 
             old_url = page.url
             result = await actions.execute_action(page, action_name, params, session_ctx)
+
+            # Persist SPA tracking state back to session
+            if "_last_nav_url" in session_ctx:
+                session_data["_last_nav_url"] = session_ctx["_last_nav_url"]
 
             # Increment action counter
             session_data["action_count"] = session_data.get("action_count", 0) + 1

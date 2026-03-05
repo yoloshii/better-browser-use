@@ -58,6 +58,8 @@ Element has no ARIA role?
 | `changed_element_count` | Elements changed since last snapshot | Check `~`-prefixed items in tree |
 | `removed_element_count` | Elements removed since last snapshot | Check `[removed since last snapshot]` section |
 | `code: RATE_LIMITED` | Too many actions on domain | Wait `wait_seconds`, then retry |
+| `spa_redirect: true` | Navigate landed on different URL (SPA redirect) | Use `new_url` as the real destination |
+| `spa_navigation: true` | Snapshot URL differs from last navigate URL | SPA routed after initial load; `spa_from`/`spa_to` show the drift |
 
 ## Common Patterns
 
@@ -80,6 +82,13 @@ launch → navigate → webmcp_discover →
 webmcp_call toolName {field1: "val", field2: "val"} → done
 ```
 
+**Shadow DOM piercing:**
+```
+evaluate with deep_query: true →
+  JS has deepQuery(sel) and deepQueryAll(sel) available
+  These recurse into shadow roots to find elements standard selectors miss
+```
+
 ## Ref Rules
 
 - Refs like `@e1` are assigned per-snapshot and reset each time
@@ -93,7 +102,7 @@ webmcp_call toolName {field1: "val", field2: "val"} → done
 |------|---------|
 | `scripts/server.py` | HTTP server, routing, loop detection, popup/download surfacing |
 | `scripts/browser_engine.py` | Browser lifecycle, WebMCP init script, popup/download handlers |
-| `scripts/actions.py` | 35 action handlers with humanization |
+| `scripts/actions.py` | 45 action handlers with humanization + shadow DOM piercing |
 | `scripts/snapshot.py` | ARIA tree parser, ref assignment, snapshot diff (new/changed/removed) |
 | `scripts/behavior.py` | Bezier mouse curves, Gaussian typing delays, eased scrolling, typo injection |
 | `scripts/models.py` | Pydantic models, PageFingerprint, ActionLoopDetector |
