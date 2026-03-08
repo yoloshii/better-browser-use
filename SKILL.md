@@ -406,7 +406,7 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 
 **Tier 2 — CloakBrowser (stealth Chromium, preferred) or Patchright (fallback):**
 - cloakbrowser (`pip install cloakbrowser`) — 26 C++ source-level Chromium patches (canvas, WebGL, audio, TLS, navigator). Binary auto-downloads ~200MB on first use.
-- Falls back to patchright (`pip install patchright && patchright install chromium`) if CloakBrowser is not installed
+- Patchright (`pip install patchright && patchright install chromium`) is an optional fallback for unsupported platforms or if explicitly disabled via `CLOAKBROWSER_ENABLED=0`
 - Set `CLOAKBROWSER_ENABLED=0` to force Patchright, `CLOAKBROWSER_AUTO_UPDATE=true` to allow binary updates
 - GeoIP auto-detects timezone/locale from proxy when `cloakbrowser[geoip]` is installed
 

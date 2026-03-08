@@ -476,8 +476,8 @@ scripts/
 
 **Tier 2 — CloakBrowser** (C++ patched Chromium):
 - `pip install cloakbrowser` — binary auto-downloaded on first use (~200MB, cached at `~/.cloakbrowser/`)
-- Falls back to Patchright (`pip install patchright && patchright install chromium`) if CloakBrowser unavailable
 - GeoIP auto-detection from proxy exit IP via GeoLite2 DB (when proxy configured)
+- Patchright (`pip install patchright`) is an optional fallback for unsupported platforms or if explicitly disabled via `CLOAKBROWSER_ENABLED=0`
 
 **Tier 3 — Camoufox** (anti-detect Firefox):
 - `pip install 'camoufox[geoip]' && python -m camoufox fetch`
