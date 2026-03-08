@@ -583,7 +583,7 @@ async def test_cloakbrowser_integration(s):
                f"content={r.get('extracted_content', '')[:100]}")
 
         # Session info should show tier_engine
-        r = await req(s, {"op": "session_info", "session_id": sid})
+        r = await req(s, {"op": "status", "session_id": sid})
         record("cloak session info", r.get("tier_engine") == "cloakbrowser",
                f"tier_engine={r.get('tier_engine')}")
 
