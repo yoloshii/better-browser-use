@@ -419,7 +419,8 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 ```bash
 pip install 'pyee>=13,<14'
 pip install 'playwright>=1.51,<1.56' && playwright install chromium
-pip install patchright && patchright install chromium
+pip install cloakbrowser                # Tier 2 primary (binary auto-downloaded on first use)
+pip install patchright && patchright install chromium  # Tier 2 fallback
 pip install aiohttp 'pydantic>=2.0' markdownify
 ```
 

@@ -464,7 +464,7 @@ scripts/
 
 **Core (all tiers):**
 - Python 3.10+
-- pyee 13.x (`pip install 'pyee>=13,<14'`) — shared event emitter for Playwright + Patchright
+- pyee 13.x (`pip install 'pyee>=13,<14'`) — shared event emitter for Playwright + Patchright + CloakBrowser
 - pydantic v2 (`pip install 'pydantic>=2.0'`)
 - aiohttp (`pip install aiohttp`)
 - markdownify (`pip install markdownify`)
@@ -487,7 +487,8 @@ scripts/
 ```bash
 pip install 'pyee>=13,<14'
 pip install 'playwright>=1.51,<1.56' && playwright install chromium
-pip install patchright && patchright install chromium
+pip install cloakbrowser                # Tier 2 primary (binary auto-downloaded on first use)
+pip install patchright && patchright install chromium  # Tier 2 fallback
 pip install aiohttp 'pydantic>=2.0' markdownify python-dotenv
 ```
 
