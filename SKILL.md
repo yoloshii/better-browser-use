@@ -417,10 +417,10 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 
 **Install order** (to avoid pyee conflicts):
 ```bash
-pip install 'pyee>=13,<14'
+pip install cloakbrowser                # Tier 2 primary (pulls pyee 12 via playwright dep)
+pip install 'pyee>=13,<14'              # Override to 13 — required for patchright compatibility
 pip install 'playwright>=1.51,<1.56' && playwright install chromium
-pip install cloakbrowser                # Tier 2 primary (binary auto-downloaded on first use)
-pip install patchright && patchright install chromium  # Tier 2 fallback
+pip install patchright && patchright install chromium  # Tier 2 optional fallback
 pip install aiohttp 'pydantic>=2.0' markdownify
 ```
 

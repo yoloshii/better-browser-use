@@ -164,4 +164,4 @@ Tier 1: `playwright>=1.51,<1.56` + chromium (avoid 1.56+ WSL2 regression)
 Tier 2: `cloakbrowser` (C++ patched Chromium, auto-downloaded) / `patchright` optional fallback (unsupported platform or `CLOAKBROWSER_ENABLED=0`)
 Tier 3: `camoufox[geoip]` + `playwright`
 
-Install order: pyee → playwright → cloakbrowser → patchright → aiohttp/pydantic/markdownify
+Install order: cloakbrowser → pyee>=13 (override) → playwright → patchright → aiohttp/pydantic/markdownify
