@@ -70,7 +70,7 @@ curl -s -X POST http://127.0.0.1:8500/ \
   -d '<json>'
 
 # Start server
-BROWSER_USE_TOKEN=<secret> ~/.venvs/scraper/bin/python3 ~/sirus-skills/browser-use/scripts/server.py --port 8500
+BROWSER_USE_TOKEN=<secret> python scripts/server.py --port 8500
 
 # Stop
 pkill -f 'server.py --port 8500'
@@ -264,7 +264,7 @@ File downloads are auto-saved to a session temp directory. Check downloads via `
 
 Profiles store identity state across sessions:
 ```
-~/.openclaw/browser-profiles/<name>/
+~/.browser-use/profiles/<name>/
 ├── cookies.json
 ├── storage.json    (localStorage + sessionStorage)
 ├── meta.json       (tier, domain, timestamps)
@@ -333,7 +333,7 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | Tier | Engine | Tracker Blocking | Humanize | When |
 |------|--------|-----------------|----------|------|
 | 1 | Playwright (Chromium) | No | Opt-in | General browsing, friendly sites |
-| 2 | Patchright (patched Chromium) | Yes | Auto | Moderate anti-bot (no custom UA, stealth defaults) |
+| 2 | CloakBrowser (C++ patched Chromium) / Patchright fallback | Yes | Auto | reCAPTCHA v3 (0.9 score), FingerprintJS, BrowserScan — binary-level stealth |
 | 3 | Camoufox (Firefox C++ fork) | Yes | Auto | Turnstile, DataDome — with GeoIP + residential proxy |
 
 ## Architecture
@@ -368,6 +368,9 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | `PROXY_SERVER` | (empty) | Proxy URL (e.g., `http://proxy:8080`). Used by Tier 2/3. |
 | `PROXY_USERNAME` | (empty) | Proxy auth username |
 | `PROXY_PASSWORD` | (empty) | Proxy auth password |
+| `CLOAKBROWSER_ENABLED` | `auto` | CloakBrowser Tier 2: `auto` (use if installed), `1` (require), `0` (force Patchright) |
+| `CLOAKBROWSER_AUTO_UPDATE` | `false` | Allow CloakBrowser binary auto-updates (`true`/`false`) |
+| `CLOAKBROWSER_GEOIP` | `auto` | GeoIP from proxy: `auto` (use if cloakbrowser[geoip] installed), `0` (disable) |
 | `CAPSOLVER_API_KEY` | (empty) | CapSolver API key for CAPTCHA solving (primary, fast AI) |
 | `TWOCAPTCHA_API_KEY` | (empty) | 2Captcha API key for CAPTCHA solving (fallback, human) |
 
@@ -401,10 +404,11 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 - playwright 1.51.x (`pip install 'playwright>=1.51,<1.56' && playwright install chromium`)
 - Avoid 1.56+ (WSL2 regression: `new_page()` hangs in headless mode)
 
-**Tier 2 — Patchright (stealth Chromium):**
-- patchright (`pip install patchright && patchright install chromium`)
-- Patched Playwright fork with stealth defaults (no `navigator.webdriver` leak, isolated JS eval)
-- Requires pyee>=13 — install pyee 13.x before playwright to satisfy both
+**Tier 2 — CloakBrowser (stealth Chromium, preferred) or Patchright (fallback):**
+- cloakbrowser (`pip install cloakbrowser`) — 26 C++ source-level Chromium patches (canvas, WebGL, audio, TLS, navigator). Binary auto-downloads ~200MB on first use.
+- Falls back to patchright (`pip install patchright && patchright install chromium`) if CloakBrowser is not installed
+- Set `CLOAKBROWSER_ENABLED=0` to force Patchright, `CLOAKBROWSER_AUTO_UPDATE=true` to allow binary updates
+- GeoIP auto-detects timezone/locale from proxy when `cloakbrowser[geoip]` is installed
 
 **Tier 3 — Camoufox (anti-detect Firefox):**
 - camoufox (`pip install camoufox[geoip] && python -m camoufox fetch`)
@@ -477,5 +481,7 @@ webmcp_discover → webmcp_call searchFlights {origin:"LON", destination:"NYC", 
 
 ## Do NOT Use For
 
-- Simple URL scraping (use a lightweight HTTP client instead)
-- Direct API calls (use `curl` / HTTP directly)
+- Simple URL scraping → use a lightweight HTTP client
+- YouTube transcripts → use a dedicated transcript API
+- SEO audits → use a dedicated SEO tool
+- Direct API calls → use `curl` / HTTP directly

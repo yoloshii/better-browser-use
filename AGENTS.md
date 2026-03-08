@@ -101,7 +101,7 @@ evaluate with deep_query: true →
 | File | Purpose |
 |------|---------|
 | `scripts/server.py` | HTTP server, routing, loop detection, popup/download surfacing |
-| `scripts/browser_engine.py` | Browser lifecycle, WebMCP init script, popup/download handlers |
+| `scripts/browser_engine.py` | Browser lifecycle, CloakBrowser/Patchright tier, GeoIP, WebMCP, popup/download handlers |
 | `scripts/actions.py` | 45 action handlers with humanization + shadow DOM piercing |
 | `scripts/snapshot.py` | ARIA tree parser, ref assignment, snapshot diff (new/changed/removed) |
 | `scripts/behavior.py` | Bezier mouse curves, Gaussian typing delays, eased scrolling, typo injection |
@@ -134,9 +134,10 @@ PROXY_PASSWORD=your_password
 ```
 
 - No proxy is configured by default — all tiers work without one
+- Tier 2 (CloakBrowser) auto-detects timezone/locale from proxy exit IP via GeoLite2 DB when available
 - Tier 3 (Camoufox) auto-detects timezone/locale from proxy exit IP when `geoip=True`
 - For anti-bot sites requiring residential IPs, use a residential/ISP proxy provider
-- Set `BROWSER_USE_GEO` to match browser locale to your proxy exit location
+- Set `BROWSER_USE_GEO` to override auto-detected locale (takes precedence over GeoIP)
 
 ## Error Recovery
 
@@ -160,7 +161,7 @@ curl -s -X POST http://127.0.0.1:8500/ -H 'Content-Type: application/json' \
 
 Core: `aiohttp`, `pydantic>=2.0`, `markdownify`, `pyee>=13,<14`, `python-dotenv`
 Tier 1: `playwright>=1.51,<1.56` + chromium (avoid 1.56+ WSL2 regression)
-Tier 2: `patchright` + chromium (requires pyee>=13)
+Tier 2: `cloakbrowser` (C++ patched Chromium, auto-downloaded) / `patchright` fallback (requires pyee>=13)
 Tier 3: `camoufox[geoip]` + `playwright`
 
 Install order: pyee → playwright → patchright → aiohttp/pydantic/markdownify

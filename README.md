@@ -83,7 +83,7 @@ Three browser engines with progressive anti-detection:
 | Tier | Engine | Tracker Blocking | Humanization | Use Case |
 |------|--------|:---:|:---:|------|
 | 1 | Playwright (Chromium) | - | Opt-in | General browsing, friendly sites |
-| 2 | Patchright (patched Chromium) | Yes | Auto | Moderate anti-bot (stealth defaults, no `navigator.webdriver` leak) |
+| 2 | CloakBrowser (C++ patched Chromium) / Patchright fallback | Yes | Auto | Moderate anti-bot (26 C++ source patches, no `navigator.webdriver` leak) |
 | 3 | Camoufox (Firefox C++ fork) | Yes | Auto | Turnstile, DataDome, PerimeterX — with GeoIP + residential proxy |
 
 Dependencies auto-install on first use per tier.
@@ -395,7 +395,10 @@ webmcp_discover → webmcp_call searchFlights {origin:"LON", destination:"NYC", 
 | `BROWSER_USE_TOKEN` | _(empty)_ | Your server's auth token (any string you choose). Not the official browser-use cloud key. |
 | `BROWSER_USE_EVALUATE` | `1` | `0` to disable `evaluate` (arbitrary JS) |
 | `BROWSER_USE_HUMANIZE` | `0` | `1` to force humanization on all tiers |
-| `BROWSER_USE_GEO` | _(empty)_ | Geo profile: `us`, `uk`, `de`, `jp`, `au`, `br`, `in`, etc. |
+| `BROWSER_USE_GEO` | _(empty)_ | Geo profile: `us`, `uk`, `de`, `jp`, `au`, `br`, `in`, etc. Overrides GeoIP auto-detect. |
+| `CLOAKBROWSER_ENABLED` | `auto` | `auto` = use if installed, `1` = require, `0` = disable (use Patchright) |
+| `CLOAKBROWSER_AUTO_UPDATE` | `false` | `true` to auto-update CloakBrowser binary |
+| `CLOAKBROWSER_GEOIP` | `auto` | `auto` = detect from proxy, `1` = force, `0` = disable GeoIP |
 | `PROXY_SERVER` | _(empty)_ | Proxy URL for Tier 2/3 (e.g., `http://proxy:8080`) |
 | `PROXY_USERNAME` | _(empty)_ | Proxy auth username |
 | `PROXY_PASSWORD` | _(empty)_ | Proxy auth password |
@@ -442,7 +445,7 @@ Errors are classified by recoverability:
 scripts/
   server.py            # aiohttp HTTP server, auth, routing, rate limiting, block detection, loop detection
   agent.py             # stdin/stdout JSON interface (alternative to server)
-  browser_engine.py    # Multi-tier browser lifecycle, tracker blocking, WebMCP init, popup/download handlers
+  browser_engine.py    # Multi-tier browser lifecycle (CloakBrowser/Patchright/Camoufox), GeoIP, WebMCP, popup/download handlers
   actions.py           # Action dispatcher (45 actions) with humanization layer
   behavior.py          # Bezier mouse curves, Gaussian typing delays, eased scrolling, typo injection
   detection.py         # Anti-bot detection (Cloudflare/DataDome/Akamai/PerimeterX)
@@ -471,9 +474,10 @@ scripts/
 - `pip install 'playwright>=1.51,<1.56' && playwright install chromium`
 - Avoid 1.56+ (WSL2 regression: `new_page()` hangs in headless mode)
 
-**Tier 2 — Patchright** (stealth Chromium):
-- `pip install patchright && patchright install chromium`
-- Requires pyee>=13 — install pyee before playwright to satisfy both
+**Tier 2 — CloakBrowser** (C++ patched Chromium):
+- `pip install cloakbrowser` — binary auto-downloaded on first use (~200MB, cached at `~/.cloakbrowser/`)
+- Falls back to Patchright (`pip install patchright && patchright install chromium`) if CloakBrowser unavailable
+- GeoIP auto-detection from proxy exit IP via GeoLite2 DB (when proxy configured)
 
 **Tier 3 — Camoufox** (anti-detect Firefox):
 - `pip install 'camoufox[geoip]' && python -m camoufox fetch`

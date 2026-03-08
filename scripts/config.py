@@ -46,12 +46,19 @@ def safe_profile_path(base_dir: Path, name: str) -> Path | None:
 class Config:
     # Browser defaults
     DEFAULT_VIEWPORT = {"width": 1920, "height": 1080}
+    # Realistic viewport for stealth tiers (accounts for browser chrome + taskbar)
+    CLOAK_VIEWPORT = {"width": 1920, "height": 947}
     DEFAULT_TIMEOUT = 30_000  # ms
     HEADLESS = True
 
     # Stealth tiers
     MAX_TIER = 3
     DOMAIN_TIER_CACHE_PATH = Path.home() / ".browser-use" / "profiles" / "domain_tiers.json"
+
+    # CloakBrowser (Tier 2 upgrade — C++ patched Chromium)
+    CLOAKBROWSER_ENABLED = os.getenv("CLOAKBROWSER_ENABLED", "auto")  # auto|1|0
+    CLOAKBROWSER_AUTO_UPDATE = os.getenv("CLOAKBROWSER_AUTO_UPDATE", "false") == "true"
+    CLOAKBROWSER_GEOIP = os.getenv("CLOAKBROWSER_GEOIP", "auto")  # auto|1|0
 
     # Humanization intensity (0.0 = robot, 2.0 = very human)
     DEFAULT_HUMANIZE = 1.0

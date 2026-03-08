@@ -542,6 +542,57 @@ async def test_shadow_dom_and_spa(s):
             log("  Session closed.")
 
 
+async def test_cloakbrowser_integration(s):
+    """Test CloakBrowser-specific features when available."""
+    log("--- CloakBrowser Integration ---")
+
+    # Check health for CloakBrowser status
+    h = await health(s)
+    cloak = h.get("cloakbrowser", {})
+    tier2_engine = h.get("tier2_engine", "patchright")
+    record("health shows tier2 engine", tier2_engine in ("cloakbrowser", "patchright"),
+           f"engine={tier2_engine}, cloak={json.dumps(cloak)}")
+
+    if tier2_engine != "cloakbrowser":
+        log("  CloakBrowser not available — skipping CloakBrowser-specific tests")
+        record("cloakbrowser skip", True, "not installed, patchright fallback active")
+        return
+
+    sid = None
+    try:
+        # Launch Tier 2 — should use CloakBrowser
+        r = await req(s, {"op": "launch", "tier": 2, "url": "https://example.com"})
+        sid = r.get("session_id")
+        if not sid:
+            record("cloak launch", False, f"launch failed: {r.get('error')}")
+            return
+
+        record("cloak launch", r.get("success", False) and r.get("tier_engine") == "cloakbrowser",
+               f"engine={r.get('tier_engine')}, tier={r.get('tier')}")
+
+        # Snapshot should work with CloakBrowser
+        r = await req(s, {"op": "action", "session_id": sid, "action": "snapshot"})
+        record("cloak snapshot", r.get("success", False),
+               f"refs={len(r.get('snapshot', '').split('@')) - 1}")
+
+        # rotate_fingerprint should be no-op for CloakBrowser
+        r = await req(s, {"op": "action", "session_id": sid, "action": "rotate_fingerprint",
+                          "params": {"geo": "us"}})
+        is_noop = r.get("success", False) and "binary level" in r.get("extracted_content", "")
+        record("cloak fp rotate (no-op)", is_noop,
+               f"content={r.get('extracted_content', '')[:100]}")
+
+        # Session info should show tier_engine
+        r = await req(s, {"op": "session_info", "session_id": sid})
+        record("cloak session info", r.get("tier_engine") == "cloakbrowser",
+               f"tier_engine={r.get('tier_engine')}")
+
+    finally:
+        if sid:
+            await req(s, {"op": "close", "session_id": sid})
+            log("  Session closed.")
+
+
 async def test_click_coordinate(s):
     log("--- click_coordinate test ---")
     sid = None
@@ -589,6 +640,7 @@ async def main():
             await test_rotate_fingerprint(s)
             await test_bowser_actions(s)
             await test_shadow_dom_and_spa(s)
+            await test_cloakbrowser_integration(s)
             await test_click_coordinate(s)
             await test_multi_session_status(s)
         except Exception as e:

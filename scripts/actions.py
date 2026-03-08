@@ -1710,18 +1710,27 @@ async def action_storage_set(page, params: dict, session: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 async def action_rotate_fingerprint(page, params: dict, session: dict) -> dict:
-    """Rotate browser fingerprint via JS injection (Tier 1-2 only).
+    """Rotate browser fingerprint via JS injection (Tier 1 only).
 
-    Tier 3 (Camoufox) manages fingerprints natively.
+    Tier 2 (CloakBrowser) and Tier 3 (Camoufox) manage fingerprints at
+    the binary level — JS surface spoofing is the wrong layer.  To rotate
+    a CloakBrowser fingerprint, close the session and relaunch with a new seed.
     Uses FingerprintManager for consistent, geo-aware profiles per domain.
-    Note: Tier 2 (Patchright) does not persist across navigation due to
-    add_init_script breaking DNS in Chrome 143+.
     """
     tier = session.get("tier", 1)
+    tier_name = session.get("tier_name", "")
     if tier == 3:
         return {
             "success": True,
             "extracted_content": "Tier 3 (Camoufox) manages fingerprints natively — no action needed.",
+        }
+    if tier == 2 and tier_name == "cloakbrowser":
+        return {
+            "success": True,
+            "extracted_content": (
+                "Tier 2 (CloakBrowser) manages fingerprints at the binary level via C++ patches. "
+                "JS rotation would conflict with the binary seed. To rotate: close session and relaunch."
+            ),
         }
 
     from fingerprint import FingerprintManager

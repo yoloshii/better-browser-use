@@ -332,6 +332,100 @@ async def _block_trackers(context: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# GeoIP resolution (auto-detect from proxy or fall back to static config)
+# ---------------------------------------------------------------------------
+
+async def _resolve_geo() -> dict[str, str]:
+    """Resolve geo config: static env override > CloakBrowser GeoIP > default.
+
+    When BROWSER_USE_GEO is set, uses static GEO_PROFILES mapping.
+    When a proxy is configured and CloakBrowser GeoIP is available,
+    auto-detects timezone/locale from the proxy's exit IP via GeoLite2.
+    Falls back to default geo config on any failure.
+    """
+    # Static override always wins
+    if Config.GEO:
+        return get_geo_config()
+
+    # Auto-detect from proxy if CloakBrowser GeoIP is available
+    if Config.PROXY_SERVER and Config.CLOAKBROWSER_GEOIP != "0":
+        try:
+            from cloakbrowser.geoip import resolve_proxy_geo
+            from urllib.parse import quote
+
+            # Build authenticated proxy URL for GeoIP resolution
+            # CloakBrowser's geoip needs a full URL, not Playwright-style dict
+            proxy_url = Config.PROXY_SERVER
+            if Config.PROXY_USERNAME:
+                from urllib.parse import urlparse, urlunparse
+                parsed = urlparse(proxy_url)
+                user = quote(Config.PROXY_USERNAME, safe="")
+                pwd = quote(Config.PROXY_PASSWORD, safe="") if Config.PROXY_PASSWORD else ""
+                netloc = f"{user}:{pwd}@{parsed.hostname}"
+                if parsed.port:
+                    netloc += f":{parsed.port}"
+                proxy_url = urlunparse((parsed.scheme, netloc, parsed.path,
+                                        parsed.params, parsed.query, parsed.fragment))
+
+            tz, locale = await asyncio.to_thread(resolve_proxy_geo, proxy_url)
+            if tz and locale:
+                log.info("GeoIP auto-detected: tz=%s locale=%s", tz, locale)
+                return {"timezone": tz, "locale": locale}
+        except (ImportError, Exception) as exc:
+            log.debug("GeoIP auto-detect failed (falling back to static): %s", exc)
+
+    # Default fallback
+    return get_geo_config()
+
+
+# ---------------------------------------------------------------------------
+# CloakBrowser prewarm (called at server startup)
+# ---------------------------------------------------------------------------
+
+_cloakbrowser_status: dict[str, Any] = {"available": False, "version": None, "error": None}
+
+
+async def prewarm_cloakbrowser() -> dict[str, Any]:
+    """Pre-download CloakBrowser binary at server startup (non-blocking).
+
+    Returns status dict for /health endpoint.
+    Catches SystemExit from unsupported platform checks.
+    """
+    global _cloakbrowser_status
+
+    if Config.CLOAKBROWSER_ENABLED == "0":
+        _cloakbrowser_status = {"available": False, "version": None, "error": "disabled"}
+        return _cloakbrowser_status
+
+    try:
+        from cloakbrowser import ensure_binary, binary_info
+
+        # Disable auto-update in production unless explicitly enabled
+        import os
+        if not Config.CLOAKBROWSER_AUTO_UPDATE:
+            os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
+
+        await asyncio.to_thread(ensure_binary)
+        info = binary_info()
+        _cloakbrowser_status = {
+            "available": True,
+            "version": info.get("version", "unknown"),
+            "binary_path": info.get("binary_path", ""),
+        }
+        log.info("CloakBrowser prewarmed: v%s", _cloakbrowser_status["version"])
+    except (ImportError, SystemExit, Exception) as exc:
+        _cloakbrowser_status = {"available": False, "version": None, "error": str(exc)}
+        log.info("CloakBrowser not available (using Patchright fallback): %s", exc)
+
+    return _cloakbrowser_status
+
+
+def get_cloakbrowser_status() -> dict[str, Any]:
+    """Get CloakBrowser availability status (for /health endpoint)."""
+    return _cloakbrowser_status
+
+
+# ---------------------------------------------------------------------------
 # BrowserTier ABC (browser-ai Provider pattern)
 # ---------------------------------------------------------------------------
 
@@ -528,6 +622,109 @@ class Tier2Patchright(BrowserTier):
             pass
 
 
+class Tier2CloakBrowser(BrowserTier):
+    """CloakBrowser — C++ patched Chromium with binary-level stealth.
+
+    26 source-level patches: canvas/WebGL/audio fingerprinting, TLS matching
+    (ja3n/ja4), navigator hardening, CDP removal.  0.9 reCAPTCHA v3 scores.
+
+    Falls back to Patchright if CloakBrowser is not installed.
+    Uses vanilla Playwright to drive CloakBrowser's binary (not the wrapper's
+    own launcher) so we keep full control of the lifecycle.
+    """
+
+    @property
+    def tier_number(self) -> int:
+        return 2
+
+    @property
+    def name(self) -> str:
+        return "cloakbrowser"
+
+    async def detect(self) -> bool:
+        if Config.CLOAKBROWSER_ENABLED == "0":
+            return False
+        try:
+            from cloakbrowser import binary_info
+            info = binary_info()
+            return info.get("installed", False)
+        except (ImportError, SystemExit):
+            return False
+
+    async def init(
+        self,
+        profile_path: str | None = None,
+        viewport: dict | None = None,
+        **kwargs: Any,
+    ) -> tuple[Any, Any, Any]:
+        from cloakbrowser import ensure_binary, binary_info
+        from cloakbrowser.config import get_default_stealth_args
+        from playwright.async_api import async_playwright
+
+        # ensure_binary() is sync and may download ~200MB — don't block the loop
+        binary_path = await asyncio.to_thread(ensure_binary)
+
+        pw = await async_playwright().start()
+
+        # Build args: CloakBrowser stealth args + no-sandbox for WSL2/containers
+        cloak_args = get_default_stealth_args()
+        cloak_args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
+
+        # Proxy config (applied at browser level for CloakBrowser)
+        launch_kwargs: dict[str, Any] = {}
+        if Config.PROXY_SERVER:
+            proxy: dict[str, str] = {"server": Config.PROXY_SERVER}
+            if Config.PROXY_USERNAME:
+                proxy["username"] = Config.PROXY_USERNAME
+            if Config.PROXY_PASSWORD:
+                proxy["password"] = Config.PROXY_PASSWORD
+            launch_kwargs["proxy"] = proxy
+
+        browser = await pw.chromium.launch(
+            executable_path=binary_path,
+            headless=Config.HEADLESS,
+            args=cloak_args,
+            ignore_default_args=["--enable-automation"],
+            **launch_kwargs,
+        )
+
+        # Resolve geo: static override > GeoIP from proxy > default
+        geo = await _resolve_geo()
+
+        context_opts: dict[str, Any] = {
+            "viewport": viewport or Config.CLOAK_VIEWPORT,
+            # No custom user_agent — CloakBrowser's binary handles UA via seed
+            "locale": geo["locale"],
+            "timezone_id": geo["timezone"],
+        }
+
+        if Config.PROXY_SERVER and "proxy" not in launch_kwargs:
+            # Proxy at context level if not already at browser level
+            context_opts["proxy"] = launch_kwargs.get("proxy")
+
+        if profile_path:
+            storage_path = Path(profile_path) / "storage.json"
+            if storage_path.exists():
+                context_opts["storage_state"] = str(storage_path)
+
+        context = await browser.new_context(**context_opts)
+
+        # Block trackers/fingerprinters on stealth tiers
+        await _block_trackers(context)
+
+        return pw, browser, context
+
+    async def teardown(self, handle: Any, browser: Any) -> None:
+        try:
+            await browser.close()
+        except Exception:
+            pass
+        try:
+            await handle.stop()
+        except Exception:
+            pass
+
+
 class Tier3Camoufox(BrowserTier):
     """Camoufox — anti-detect Firefox with C++ fingerprint spoofing + GeoIP.
 
@@ -621,10 +818,29 @@ class Tier3Camoufox(BrowserTier):
             pass
 
 
-# Tier registry
+# Tier registry — Tier 2 uses CloakBrowser if available, Patchright fallback
+def _select_tier2() -> BrowserTier:
+    """Pick the best Tier 2 implementation at import time.
+
+    CloakBrowser (C++ patched Chromium) is preferred when:
+    - CLOAKBROWSER_ENABLED != "0"
+    - The cloakbrowser package is importable
+
+    Falls back to Patchright silently.  Actual binary availability is
+    checked at launch time (detect() + prewarm), not here.
+    """
+    if Config.CLOAKBROWSER_ENABLED == "0":
+        return Tier2Patchright()
+    try:
+        import cloakbrowser  # noqa: F401
+        return Tier2CloakBrowser()
+    except ImportError:
+        return Tier2Patchright()
+
+
 TIERS: dict[int, BrowserTier] = {
     1: Tier1Playwright(),
-    2: Tier2Patchright(),
+    2: _select_tier2(),
     3: Tier3Camoufox(),
 }
 
@@ -800,12 +1016,12 @@ async def launch(
     """Launch a new browser session.
 
     Args:
-        tier: Stealth tier (1=Playwright, 2=Patchright, 3=Camoufox).
-        profile: Profile name to load (from ~/.openclaw/browser-profiles/<name>/).
+        tier: Stealth tier (1=Playwright, 2=CloakBrowser/Patchright, 3=Camoufox).
+        profile: Profile name to load (from ~/.browser-use/profiles/<name>/).
         viewport: Override viewport dict.
         url: Navigate to this URL after launch.
 
-    Returns dict: {success, session_id, tier, url, title}
+    Returns dict: {success, session_id, tier, tier_engine, url, title}
     """
     session_id = uuid.uuid4().hex[:12]
 
@@ -850,6 +1066,7 @@ async def launch(
         "context": context,
         "page": page,
         "tier": tier,
+        "tier_name": tier_impl.name,
         "tier_impl": tier_impl,
         "profile": profile,
         "lock": asyncio.Lock(),
@@ -879,6 +1096,7 @@ async def launch(
         "success": True,
         "session_id": session_id,
         "tier": tier,
+        "tier_engine": tier_impl.name,
     }
 
     if url:
@@ -928,6 +1146,7 @@ async def get_session_info(session_id: str) -> dict | None:
     return {
         "session_id": session_id,
         "tier": session["tier"],
+        "tier_engine": session.get("tier_name", ""),
         "profile": session.get("profile"),
         "url": page.url,
         "title": await page.title(),

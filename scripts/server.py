@@ -160,6 +160,7 @@ async def handle_request_inner(request_data: dict) -> dict:
                 "session_id": session_id,
                 "ref_map": ref_map,
                 "tier": session_data.get("tier", 1),
+                "tier_name": session_data.get("tier_name", ""),
                 "humanize": session_data.get("humanize", False),
                 "humanize_intensity": humanize_intensity,
                 "webmcp_available": session_data.get("webmcp_available"),
@@ -563,9 +564,14 @@ async def handle_health(request: web.Request) -> web.Response:
     """Health check endpoint."""
     import browser_engine
     sessions = await browser_engine.list_sessions()
+    tiers = await browser_engine.detect_available_tiers()
+    cloak_status = browser_engine.get_cloakbrowser_status()
     return web.json_response({
         "status": "ok",
         "active_sessions": len(sessions),
+        "available_tiers": tiers,
+        "tier2_engine": "cloakbrowser" if cloak_status.get("available") else "patchright",
+        "cloakbrowser": cloak_status,
     })
 
 
@@ -591,6 +597,10 @@ async def _session_sweeper(app: web.Application) -> None:
 async def on_startup(app: web.Application) -> None:
     """Start background tasks on server startup."""
     app["sweeper_task"] = asyncio.create_task(_session_sweeper(app))
+
+    # Prewarm CloakBrowser binary (non-blocking, logs status)
+    import browser_engine
+    asyncio.create_task(browser_engine.prewarm_cloakbrowser())
 
 
 async def cleanup(app: web.Application) -> None:
