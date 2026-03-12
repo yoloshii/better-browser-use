@@ -70,7 +70,7 @@ curl -s -X POST http://127.0.0.1:8500/ \
   -d '<json>'
 
 # Start server
-BROWSER_USE_TOKEN=<secret> python scripts/server.py --port 8500
+BROWSER_USE_TOKEN=<secret> ~/.venvs/scraper/bin/python3 ~/sirus-skills/browser-use/scripts/server.py --port 8500
 
 # Stop
 pkill -f 'server.py --port 8500'
@@ -187,7 +187,7 @@ Returns: `{success, screenshot}` (base64 PNG)
 | `tab_switch` | `{index}` | Switch tab (0-based) |
 | `tab_close` | `{index}` | Close tab |
 
-### WebMCP (Chrome 146+)
+### WebMCP (Chrome 147+)
 | Action | Params | Description |
 |--------|--------|-------------|
 | `webmcp_discover` | `{}` | Probe page for WebMCP tools (imperative + declarative). Run after navigate. |
@@ -264,7 +264,7 @@ File downloads are auto-saved to a session temp directory. Check downloads via `
 
 Profiles store identity state across sessions:
 ```
-~/.browser-use/profiles/<name>/
+~/.openclaw/browser-profiles/<name>/
 ├── cookies.json
 ├── storage.json    (localStorage + sessionStorage)
 ├── meta.json       (tier, domain, timestamps)
@@ -440,16 +440,16 @@ All tiers auto-install their browser binaries on first use if not already presen
 
 ## WebMCP Integration
 
-WebMCP is a Chrome 146+ web standard that lets pages expose structured tools for AI agents. When available, it replaces guesswork-based form filling with explicit contracts.
+WebMCP is a Chrome 147+ web standard that lets pages expose structured tools for AI agents. When available, it replaces guesswork-based form filling with explicit contracts.
 
 ### Requirements
-- Chrome Dev (146+), Beta, or Canary installed on the host
+- Chrome Dev (147+), Beta, or Canary installed on the host
 - Set `BROWSER_USE_CHROME_CHANNEL=chrome-beta` (or `chrome-dev`, `chrome-canary`)
 - Or set `BROWSER_USE_CHROME_PATH=/path/to/chrome` for explicit binary
 - Set `BROWSER_USE_WEBMCP=1` to force WebMCP mode, or leave as `auto` (default)
 
 ### How It Works
-1. On session launch, an init script intercepts `navigator.modelContext.registerTool()` calls
+1. On session launch, an init script intercepts `navigator.modelContext.registerTool()`/`unregisterTool()` calls
 2. `webmcp_discover` reads captured tools + scans `<form toolname>` elements
 3. `webmcp_call` invokes tool.execute() (imperative) or fills+submits form (declarative)
 4. Discovered tools appear in subsequent snapshot headers
@@ -482,7 +482,7 @@ webmcp_discover → webmcp_call searchFlights {origin:"LON", destination:"NYC", 
 
 ## Do NOT Use For
 
-- Simple URL scraping → use a lightweight HTTP client
-- YouTube transcripts → use a dedicated transcript API
-- SEO audits → use a dedicated SEO tool
-- Direct API calls → use `curl` / HTTP directly
+- Simple URL scraping → use `ultimate-scraper`
+- YouTube transcripts → use `youtube-transcript`
+- SEO audits → use `seo-crawler`
+- Direct API calls → use `curl` / HTTP

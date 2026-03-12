@@ -110,7 +110,8 @@ TRACKER_PATTERNS: list[str] = [
 
 
 # ---------------------------------------------------------------------------
-# WebMCP init script — intercepts tool registrations on Chrome 146+ pages
+# WebMCP init script — intercepts tool registrations on Chrome 147+ pages
+# Chrome 147 removed provideContext()/clearContext() (spec PR #132, issue #101)
 # ---------------------------------------------------------------------------
 
 WEBMCP_INIT_SCRIPT = """
@@ -119,10 +120,13 @@ WEBMCP_INIT_SCRIPT = """
     window.__webmcp = { tools: {}, available: false, declarative: {} };
 
     if (typeof navigator.modelContext === 'undefined') return;
+    if (typeof navigator.modelContext.registerTool !== 'function') return;
 
     window.__webmcp.available = true;
 
     // --- Intercept imperative tool registrations ---
+    // Chrome 147+: only registerTool/unregisterTool exist
+    // provideContext/clearContext were removed (spec PR #132)
 
     const origRegister = navigator.modelContext.registerTool.bind(navigator.modelContext);
     navigator.modelContext.registerTool = function(tool) {
@@ -131,39 +135,17 @@ WEBMCP_INIT_SCRIPT = """
             description: tool.description || '',
             inputSchema: tool.inputSchema || {},
             annotations: tool.annotations || {},
+            readOnlyHint: !!(tool.annotations && tool.annotations.readOnlyHint),
             _hasExecute: typeof tool.execute === 'function',
             _ref: tool,  // keep live reference for execute()
         };
         return origRegister(tool);
     };
 
-    const origProvide = navigator.modelContext.provideContext.bind(navigator.modelContext);
-    navigator.modelContext.provideContext = function(options) {
-        // provideContext replaces entire tool set
-        window.__webmcp.tools = {};
-        for (const tool of (options?.tools || [])) {
-            window.__webmcp.tools[tool.name] = {
-                name: tool.name,
-                description: tool.description || '',
-                inputSchema: tool.inputSchema || {},
-                annotations: tool.annotations || {},
-                _hasExecute: typeof tool.execute === 'function',
-                _ref: tool,
-            };
-        }
-        return origProvide(options);
-    };
-
     const origUnregister = navigator.modelContext.unregisterTool.bind(navigator.modelContext);
     navigator.modelContext.unregisterTool = function(name) {
         delete window.__webmcp.tools[name];
         return origUnregister(name);
-    };
-
-    const origClear = navigator.modelContext.clearContext.bind(navigator.modelContext);
-    navigator.modelContext.clearContext = function() {
-        window.__webmcp.tools = {};
-        return origClear();
     };
 
     // --- Scan declarative tools (forms with toolname attribute) ---
@@ -244,11 +226,20 @@ WEBMCP_INIT_SCRIPT = """
     window.__webmcp.rescanDeclarative = scanDeclarativeForms;
 
     // --- Expose execute helper ---
+    // Spec: ToolExecuteCallback = (input, client) => Promise
+    // client.requestUserInteraction(callback) enables human-in-the-loop
+    const mockClient = {
+        requestUserInteraction: async (cb) => {
+            // In agent context, auto-approve (no human in the loop)
+            return typeof cb === 'function' ? await cb() : undefined;
+        },
+    };
+
     window.__webmcp.executeTool = async (name, args) => {
         // Try imperative first
         const imp = window.__webmcp.tools[name];
         if (imp && imp._ref && typeof imp._ref.execute === 'function') {
-            return await imp._ref.execute(args);
+            return await imp._ref.execute(args, mockClient);
         }
         // Try declarative (form fill + submit)
         const decl = window.__webmcp.declarative[name];
@@ -1017,7 +1008,7 @@ async def launch(
 
     Args:
         tier: Stealth tier (1=Playwright, 2=CloakBrowser/Patchright, 3=Camoufox).
-        profile: Profile name to load (from ~/.browser-use/profiles/<name>/).
+        profile: Profile name to load (from ~/.openclaw/browser-profiles/<name>/).
         viewport: Override viewport dict.
         url: Navigate to this URL after launch.
 

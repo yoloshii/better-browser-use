@@ -917,7 +917,7 @@ async def action_tab_close(page, params: dict, session: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# WebMCP actions (Chrome 146+ structured tool interaction)
+# WebMCP actions (Chrome 147+ structured tool interaction)
 # ---------------------------------------------------------------------------
 
 async def action_webmcp_discover(page, params: dict, session: dict) -> dict:
@@ -940,6 +940,7 @@ async def action_webmcp_discover(page, params: dict, session: dict) -> dict:
                     description: t.description,
                     inputSchema: typeof t.inputSchema === 'string'
                         ? JSON.parse(t.inputSchema) : (t.inputSchema || {}),
+                    readOnlyHint: !!(t.annotations && t.annotations.readOnlyHint),
                 })),
             };
         }
@@ -955,6 +956,7 @@ async def action_webmcp_discover(page, params: dict, session: dict) -> dict:
                     name: t.name,
                     description: t.description,
                     inputSchema: t.inputSchema,
+                    readOnlyHint: t.readOnlyHint || false,
                     type: 'imperative',
                 });
             }
@@ -963,6 +965,7 @@ async def action_webmcp_discover(page, params: dict, session: dict) -> dict:
                     name: t.name,
                     description: t.description,
                     inputSchema: t.inputSchema,
+                    readOnlyHint: false,
                     type: 'declarative',
                 });
             }

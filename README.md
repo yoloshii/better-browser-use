@@ -150,7 +150,7 @@ Dependencies auto-install on first use per tier.
 | `get_attributes` | `{ref}` | Get all HTML attributes of an element. |
 | `get_bbox` | `{ref}` | Get bounding box `{x, y, width, height}` in viewport coordinates. |
 
-### WebMCP (Chrome 146+)
+### WebMCP (Chrome 147+)
 
 | Action | Params | Description |
 |--------|--------|-------------|
@@ -364,12 +364,12 @@ Tier 2 and 3 sessions automatically block 25+ tracking/fingerprinting patterns v
 
 Not applied to Tier 1 (no stealth pretense).
 
-## WebMCP (Chrome 146+)
+## WebMCP (Chrome 147+)
 
 WebMCP is a web standard that lets pages expose structured tools for AI agents. When available, it replaces guesswork-based form filling with explicit contracts.
 
 **Requirements:**
-- Chrome Dev (146+), Beta, or Canary
+- Chrome Dev (147+), Beta, or Canary
 - Set `BROWSER_USE_CHROME_CHANNEL=chrome-beta` or `BROWSER_USE_CHROME_PATH=/path/to/chrome`
 - `BROWSER_USE_WEBMCP=auto` (default) or `1` to force
 
