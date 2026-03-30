@@ -34,7 +34,9 @@ The agent loop: **snapshot** (observe) → **reason** (decide) → **act** (exec
 ```bash
 git clone https://github.com/yoloshii/better-browser-use.git
 cd better-browser-use
-pip install -r requirements.txt && playwright install chromium
+pip install cloakbrowser 'pyee>=13,<14'
+pip install 'playwright>=1.51,<1.56' && playwright install chromium
+pip install 'aiohttp>=3.13' 'pydantic>=2.12' 'markdownify>=1.2' python-dotenv
 ```
 
 ### Configure (optional)
