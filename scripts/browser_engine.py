@@ -110,14 +110,15 @@ TRACKER_PATTERNS: list[str] = [
 
 
 # ---------------------------------------------------------------------------
-# WebMCP init script — intercepts tool registrations on Chrome 147+ pages
+# WebMCP init script — intercepts tool registrations on Chrome 146+ pages
 # Chrome 147 removed provideContext()/clearContext() (spec PR #132, issue #101)
+# Chrome 148 removed unregisterTool(); use AbortSignal instead (spec PR #147)
 # ---------------------------------------------------------------------------
 
 WEBMCP_INIT_SCRIPT = """
 (() => {
     // Initialize WebMCP interception layer
-    window.__webmcp = { tools: {}, available: false, declarative: {} };
+    window.__webmcp = { tools: {}, available: false, declarative: {}, _abortControllers: {} };
 
     if (typeof navigator.modelContext === 'undefined') return;
     if (typeof navigator.modelContext.registerTool !== 'function') return;
@@ -125,11 +126,11 @@ WEBMCP_INIT_SCRIPT = """
     window.__webmcp.available = true;
 
     // --- Intercept imperative tool registrations ---
-    // Chrome 147+: only registerTool/unregisterTool exist
-    // provideContext/clearContext were removed (spec PR #132)
+    // Chrome 148+: unregisterTool() removed, use AbortSignal instead
+    // We track AbortControllers so we can unregister tools from our side
 
     const origRegister = navigator.modelContext.registerTool.bind(navigator.modelContext);
-    navigator.modelContext.registerTool = function(tool) {
+    navigator.modelContext.registerTool = function(tool, options) {
         window.__webmcp.tools[tool.name] = {
             name: tool.name,
             description: tool.description || '',
@@ -139,14 +140,26 @@ WEBMCP_INIT_SCRIPT = """
             _hasExecute: typeof tool.execute === 'function',
             _ref: tool,  // keep live reference for execute()
         };
-        return origRegister(tool);
+        // Track the AbortController if the page provided a signal
+        if (options && options.signal) {
+            options.signal.addEventListener('abort', () => {
+                delete window.__webmcp.tools[tool.name];
+                delete window.__webmcp._abortControllers[tool.name];
+            });
+        }
+        return origRegister(tool, options);
     };
 
-    const origUnregister = navigator.modelContext.unregisterTool.bind(navigator.modelContext);
-    navigator.modelContext.unregisterTool = function(name) {
-        delete window.__webmcp.tools[name];
-        return origUnregister(name);
-    };
+    // Chrome 147 and below: unregisterTool exists — proxy it
+    // Chrome 148+: unregisterTool removed — skip gracefully
+    if (typeof navigator.modelContext.unregisterTool === 'function') {
+        const origUnregister = navigator.modelContext.unregisterTool.bind(navigator.modelContext);
+        navigator.modelContext.unregisterTool = function(name) {
+            delete window.__webmcp.tools[name];
+            delete window.__webmcp._abortControllers[name];
+            return origUnregister(name);
+        };
+    }
 
     // --- Scan declarative tools (forms with toolname attribute) ---
     // Runs after DOM is ready; re-scanned on webmcp_discover action.
