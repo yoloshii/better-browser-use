@@ -497,7 +497,7 @@ class Tier1Playwright(BrowserTier):
         viewport: dict | None = None,
         **kwargs: Any,
     ) -> tuple[Any, Any, Any]:
-        # _ensure_playwright_chromium()  # Skip — already installed, blocks event loop
+        await asyncio.to_thread(_ensure_playwright_chromium)
         from playwright.async_api import async_playwright
 
         geo = get_geo_config()
@@ -572,7 +572,7 @@ class Tier2Patchright(BrowserTier):
         viewport: dict | None = None,
         **kwargs: Any,
     ) -> tuple[Any, Any, Any]:
-        # _ensure_patchright()  # Skip — already installed, blocks event loop
+        await asyncio.to_thread(_ensure_patchright)
         from patchright.async_api import async_playwright
 
         geo = get_geo_config()
@@ -762,7 +762,7 @@ class Tier3Camoufox(BrowserTier):
     ) -> tuple[Any, Any, Any]:
         import os
 
-        _ensure_camoufox()
+        await asyncio.to_thread(_ensure_camoufox)
         from playwright.async_api import async_playwright
         from camoufox import AsyncNewBrowser
 
