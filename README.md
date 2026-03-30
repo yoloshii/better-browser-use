@@ -34,9 +34,7 @@ The agent loop: **snapshot** (observe) → **reason** (decide) → **act** (exec
 ```bash
 git clone https://github.com/yoloshii/better-browser-use.git
 cd better-browser-use
-pip install cloakbrowser 'pyee>=13,<14'
-pip install 'playwright>=1.51,<1.56' && playwright install chromium
-pip install aiohttp 'pydantic>=2.0' markdownify python-dotenv
+pip install -r requirements.txt && playwright install chromium
 ```
 
 ### Configure (optional)
@@ -83,7 +81,7 @@ Three browser engines with progressive anti-detection:
 | Tier | Engine | Tracker Blocking | Humanization | Use Case |
 |------|--------|:---:|:---:|------|
 | 1 | Playwright (Chromium) | - | Opt-in | General browsing, friendly sites |
-| 2 | CloakBrowser (C++ patched Chromium) / Patchright fallback | Yes | Auto | Moderate anti-bot (26 C++ source patches, no `navigator.webdriver` leak) |
+| 2 | CloakBrowser (C++ patched Chromium) / Patchright fallback | Yes | Auto | Moderate anti-bot (33 C++ source patches, no `navigator.webdriver` leak) |
 | 3 | Camoufox (Firefox C++ fork) | Yes | Auto | Turnstile, DataDome, PerimeterX — with GeoIP + residential proxy |
 
 Dependencies auto-install on first use per tier.
