@@ -86,7 +86,7 @@ Three browser engines with progressive anti-detection:
 | 2 | CloakBrowser (C++ patched Chromium) / Patchright fallback | Yes | Auto | Moderate anti-bot (33 C++ source patches, no `navigator.webdriver` leak) |
 | 3 | Camoufox (Firefox C++ fork) | Yes | Auto | Turnstile, DataDome, PerimeterX — with GeoIP + residential proxy |
 
-Dependencies auto-install on first use per tier.
+Tier 2 (CloakBrowser) and Tier 3 (Camoufox) auto-download binaries on first use. Tier 1 requires `playwright install chromium`.
 
 ```bash
 # Tier 1 (default)
@@ -492,7 +492,7 @@ pip install patchright && patchright install chromium  # Tier 2 optional fallbac
 pip install aiohttp 'pydantic>=2.0' markdownify python-dotenv
 ```
 
-All tiers auto-install their browser binaries on first use.
+Tier 2 (CloakBrowser) and Tier 3 (Camoufox) auto-download their browser binaries on first use. Tier 1 (Playwright) and Tier 2 fallback (Patchright) require manual binary install via `playwright install chromium` / `patchright install chromium`.
 
 ## License
 

@@ -424,7 +424,7 @@ pip install patchright && patchright install chromium  # Tier 2 optional fallbac
 pip install aiohttp 'pydantic>=2.0' markdownify
 ```
 
-All tiers auto-install their browser binaries on first use if not already present.
+Tier 2 (CloakBrowser) and Tier 3 (Camoufox) auto-download their browser binaries on first use. Tier 1 (Playwright) and Tier 2 fallback (Patchright) require manual binary install via `playwright install chromium` / `patchright install chromium`.
 
 ## WSL2 Known Issues
 
