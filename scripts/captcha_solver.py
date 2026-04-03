@@ -54,14 +54,15 @@ EXTRACT_SITEKEY_JS = """(() => {
         if (cf.dataset.cdata) r.cdata = cf.dataset.cdata;
         r.url = url; return r;
     }
-    if (document.querySelector('script[src*="challenges.cloudflare.com"]')) {
-        // Turnstile script loaded but no widget yet (explicit render mode)
-        r.type = 'turnstile_script_only'; r.url = url; return r;
-    }
+    // Turnstile via iframe (check before script_only — pages with both should use iframe)
     const cfIframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
     if (cfIframe) {
         const m = cfIframe.src.match(/[?&]k=([^&]+)/);
         if (m) { r.type = 'turnstile'; r.sitekey = m[1]; r.url = url; return r; }
+    }
+    if (document.querySelector('script[src*="challenges.cloudflare.com"]')) {
+        // Turnstile script loaded but no widget/iframe yet (explicit render mode)
+        r.type = 'turnstile_script_only'; r.url = url; return r;
     }
 
     // 3. reCAPTCHA v3 — invisible, loaded via render= param in script src
