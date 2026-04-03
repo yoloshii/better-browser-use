@@ -24,112 +24,122 @@ from config import Config
 # ---------------------------------------------------------------------------
 
 EXTRACT_SITEKEY_JS = """(() => {
-    const result = {type: null, sitekey: null, action: null};
+    const r = {type: null, sitekey: null, action: null, cdata: null};
+    const url = window.location.href;
 
-    // reCAPTCHA v2/v3
-    const recap = document.querySelector('[data-sitekey]');
-    if (recap) {
-        result.sitekey = recap.getAttribute('data-sitekey');
-        result.type = recap.classList.contains('g-recaptcha') ? 'recaptcha_v2' : 'recaptcha';
-        const action = recap.getAttribute('data-action');
-        if (action) { result.action = action; result.type = 'recaptcha_v3'; }
-        return result;
+    // 1. hCaptcha — check FIRST (hCaptcha elements also have data-sitekey,
+    //    which would false-positive as reCAPTCHA if checked later)
+    const hc = document.querySelector('.h-captcha, [data-hcaptcha-sitekey]');
+    if (hc) {
+        r.type = 'hcaptcha';
+        r.sitekey = hc.dataset.sitekey || hc.dataset.hcaptchaSitekey;
+        r.url = url; return r;
+    }
+    if (document.querySelector('script[src*="hcaptcha.com"], iframe[src*="hcaptcha.com"]')) {
+        const el = document.querySelector('[data-sitekey]');
+        if (el) { r.type = 'hcaptcha'; r.sitekey = el.dataset.sitekey; r.url = url; return r; }
+        const f = document.querySelector('iframe[src*="hcaptcha.com"]');
+        if (f) {
+            const m = f.src.match(/sitekey=([^&]+)/);
+            if (m) { r.type = 'hcaptcha'; r.sitekey = m[1]; r.url = url; return r; }
+        }
     }
 
-    // reCAPTCHA v2 iframe
-    const recapIframe = document.querySelector('iframe[src*="recaptcha"]');
-    if (recapIframe) {
-        const m = recapIframe.src.match(/[?&]k=([^&]+)/);
-        if (m) { result.sitekey = m[1]; result.type = 'recaptcha_v2'; return result; }
+    // 2. Cloudflare Turnstile — check before reCAPTCHA (also uses data-sitekey)
+    const cf = document.querySelector('.cf-turnstile, [data-turnstile-sitekey]');
+    if (cf) {
+        r.type = 'turnstile';
+        r.sitekey = cf.dataset.sitekey || cf.dataset.turnstileSitekey;
+        if (cf.dataset.action) r.action = cf.dataset.action;
+        if (cf.dataset.cdata) r.cdata = cf.dataset.cdata;
+        r.url = url; return r;
     }
-
-    // hCaptcha
-    const hcap = document.querySelector('[data-sitekey]');
-    if (hcap && (hcap.classList.contains('h-captcha') || document.querySelector('iframe[src*="hcaptcha"]'))) {
-        result.sitekey = hcap.getAttribute('data-sitekey');
-        result.type = 'hcaptcha';
-        return result;
+    if (document.querySelector('script[src*="challenges.cloudflare.com"]')) {
+        // Turnstile script loaded but no widget yet (explicit render mode)
+        r.type = 'turnstile_script_only'; r.url = url; return r;
     }
-    const hcapIframe = document.querySelector('iframe[src*="hcaptcha"]');
-    if (hcapIframe) {
-        const m = hcapIframe.src.match(/sitekey=([^&]+)/);
-        if (m) { result.sitekey = m[1]; result.type = 'hcaptcha'; return result; }
-    }
-
-    // Cloudflare Turnstile
-    const turnstile = document.querySelector('[data-sitekey].cf-turnstile') ||
-                      document.querySelector('.cf-turnstile[data-sitekey]') ||
-                      document.querySelector('div[data-sitekey]');
-    if (turnstile && (document.querySelector('script[src*="turnstile"]') ||
-                      document.querySelector('iframe[src*="challenges.cloudflare.com"]'))) {
-        result.sitekey = turnstile.getAttribute('data-sitekey');
-        result.type = 'turnstile';
-        return result;
-    }
-
-    // Turnstile via iframe only
     const cfIframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
     if (cfIframe) {
         const m = cfIframe.src.match(/[?&]k=([^&]+)/);
-        if (m) { result.sitekey = m[1]; result.type = 'turnstile'; return result; }
+        if (m) { r.type = 'turnstile'; r.sitekey = m[1]; r.url = url; return r; }
     }
 
-    return result;
+    // 3. reCAPTCHA v3 — invisible, loaded via render= param in script src
+    const v3Script = document.querySelector('script[src*="recaptcha"][src*="render="]');
+    if (v3Script) {
+        const m = v3Script.src.match(/render=([^&]+)/);
+        if (m && m[1] !== 'explicit') {
+            r.type = 'recaptcha_v3'; r.sitekey = m[1]; r.url = url; return r;
+        }
+    }
+
+    // 4. reCAPTCHA v2 (checkbox or invisible) — DOM element with data-sitekey
+    const rc = document.querySelector('.g-recaptcha[data-sitekey]');
+    if (rc) {
+        r.sitekey = rc.dataset.sitekey;
+        const action = rc.getAttribute('data-action');
+        if (action) { r.type = 'recaptcha_v3'; r.action = action; }
+        else { r.type = 'recaptcha_v2'; }
+        r.url = url; return r;
+    }
+
+    // 5. reCAPTCHA v2 via iframe (no DOM element)
+    const rcIframe = document.querySelector('iframe[src*="recaptcha"]');
+    if (rcIframe) {
+        const m = rcIframe.src.match(/[?&]k=([^&]+)/);
+        if (m) { r.type = 'recaptcha_v2'; r.sitekey = m[1]; r.url = url; return r; }
+    }
+
+    return r;
 })()"""
 
 
 # Token injection JS templates
 INJECT_TOKEN_JS = {
     "recaptcha_v2": """(token) => {
-        const el = document.getElementById('g-recaptcha-response');
-        if (el) { el.value = token; el.style.display = 'none'; }
-        // Also try textarea variant
-        const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
-        if (ta) { ta.value = token; }
-        // Trigger callback if registered
-        if (typeof ___grecaptcha_cfg !== 'undefined') {
-            const clients = ___grecaptcha_cfg.clients;
-            if (clients) {
-                for (const cid of Object.keys(clients)) {
-                    const client = clients[cid];
-                    // Walk the client object to find callback
-                    const walk = (obj) => {
-                        if (!obj || typeof obj !== 'object') return;
-                        for (const key of Object.keys(obj)) {
-                            if (typeof obj[key] === 'function' && key.length < 3) {
-                                try { obj[key](token); } catch(e) {}
-                            }
-                            if (typeof obj[key] === 'object') walk(obj[key]);
-                        }
-                    };
-                    walk(client);
+        document.querySelectorAll('[name="g-recaptcha-response"]').forEach(el => {
+            el.value = token; el.style.display = 'block';
+        });
+        // Trigger callback — depth-limited walk through ___grecaptcha_cfg.clients
+        if (typeof ___grecaptcha_cfg !== 'undefined' && ___grecaptcha_cfg.clients) {
+            const walk = (obj, depth) => {
+                if (depth > 4 || !obj) return;
+                for (const k in obj) {
+                    if (typeof obj[k] === 'function' && k.length < 3) {
+                        try { obj[k](token); } catch(e) {}
+                    } else if (typeof obj[k] === 'object') {
+                        walk(obj[k], depth + 1);
+                    }
                 }
+            };
+            for (const cid of Object.keys(___grecaptcha_cfg.clients)) {
+                walk(___grecaptcha_cfg.clients[cid], 0);
             }
         }
     }""",
     "recaptcha_v3": """(token) => {
-        const el = document.getElementById('g-recaptcha-response');
-        if (el) el.value = token;
-        const ta = document.querySelector('textarea[name="g-recaptcha-response"]');
-        if (ta) ta.value = token;
+        document.querySelectorAll('[name="g-recaptcha-response"]').forEach(el => {
+            el.value = token;
+        });
     }""",
     "hcaptcha": """(token) => {
-        const el = document.querySelector('[name="h-captcha-response"]') ||
-                   document.querySelector('textarea[name="h-captcha-response"]');
-        if (el) el.value = token;
-        // Also set g-recaptcha-response (hCaptcha compat mode)
+        const ta = document.querySelector('[name="h-captcha-response"], textarea[name*="hcaptcha"]');
+        if (ta) ta.value = token;
+        // Set iframe data attribute for cross-frame verification
+        document.querySelectorAll('iframe[data-hcaptcha-response]').forEach(f => {
+            f.setAttribute('data-hcaptcha-response', token);
+        });
+        // hCaptcha compat: some sites also check g-recaptcha-response
         const g = document.querySelector('[name="g-recaptcha-response"]');
         if (g) g.value = token;
     }""",
     "turnstile": """(token) => {
-        const input = document.querySelector('[name="cf-turnstile-response"]') ||
-                      document.querySelector('input[name="cf-turnstile-response"]');
-        if (input) input.value = token;
-        // Turnstile callback
-        if (window.turnstile && typeof window.turnstile._callbacks === 'object') {
-            for (const cb of Object.values(window.turnstile._callbacks)) {
-                if (typeof cb === 'function') try { cb(token); } catch(e) {}
-            }
+        const inp = document.querySelector('[name="cf-turnstile-response"], input[name*="turnstile"]');
+        if (inp) inp.value = token;
+        // Trigger Turnstile success callback via widget element
+        const w = document.querySelector('.cf-turnstile');
+        if (w && w.dataset.callback && typeof window[w.dataset.callback] === 'function') {
+            try { window[w.dataset.callback](token); } catch(e) {}
         }
     }""",
 }
@@ -144,6 +154,7 @@ async def _solve_capsolver(
     sitekey: str,
     page_url: str,
     action: Optional[str] = None,
+    cdata: Optional[str] = None,
 ) -> Optional[str]:
     """Solve CAPTCHA via CapSolver API. Returns token or None."""
     api_key = Config.CAPSOLVER_API_KEY
@@ -174,6 +185,14 @@ async def _solve_capsolver(
     if captcha_type == "recaptcha_v3":
         task["pageAction"] = action or "verify"
         task["minScore"] = 0.7
+    if captcha_type == "turnstile":
+        metadata = {}
+        if action:
+            metadata["action"] = action
+        if cdata:
+            metadata["cdata"] = cdata
+        if metadata:
+            task["metadata"] = metadata
 
     async with aiohttp.ClientSession() as http:
         # Create task
@@ -220,6 +239,7 @@ async def _solve_twocaptcha(
     sitekey: str,
     page_url: str,
     action: Optional[str] = None,
+    cdata: Optional[str] = None,
 ) -> Optional[str]:
     """Solve CAPTCHA via 2Captcha API. Returns token or None."""
     api_key = Config.TWOCAPTCHA_API_KEY
@@ -253,6 +273,10 @@ async def _solve_twocaptcha(
         params["method"] = "turnstile"
         params["sitekey"] = sitekey
         params["pageurl"] = page_url
+        if action:
+            params["action"] = action
+        if cdata:
+            params["data"] = cdata
     else:
         return None
 
@@ -313,6 +337,29 @@ async def solve_captcha(page: Any) -> dict:
     captcha_type = info.get("type")
     sitekey = info.get("sitekey")
     action = info.get("action")
+    cdata = info.get("cdata")
+
+    # Turnstile script_only: widget not rendered yet (explicit render mode).
+    # Bounded re-detect: poll up to 3 times, 1s apart.
+    if captcha_type == "turnstile_script_only":
+        for _ in range(3):
+            await asyncio.sleep(1)
+            try:
+                info = await page.evaluate(EXTRACT_SITEKEY_JS)
+            except Exception:
+                break
+            if info.get("type") and info.get("type") != "turnstile_script_only":
+                captcha_type = info.get("type")
+                sitekey = info.get("sitekey")
+                action = info.get("action")
+                cdata = info.get("cdata")
+                break
+        else:
+            return {
+                "success": False,
+                "error": "Turnstile script loaded but widget never rendered (explicit render). "
+                         "The page may require user interaction to trigger turnstile.render().",
+            }
 
     if not captcha_type or not sitekey:
         return {
@@ -327,13 +374,13 @@ async def solve_captcha(page: Any) -> dict:
 
     # Tier 1: CapSolver (fast, AI)
     if Config.CAPSOLVER_API_KEY:
-        token = await _solve_capsolver(captcha_type, sitekey, page_url, action)
+        token = await _solve_capsolver(captcha_type, sitekey, page_url, action, cdata)
         if token:
             solver_used = "capsolver"
 
     # Tier 2: 2Captcha (human fallback)
     if not token and Config.TWOCAPTCHA_API_KEY:
-        token = await _solve_twocaptcha(captcha_type, sitekey, page_url, action)
+        token = await _solve_twocaptcha(captcha_type, sitekey, page_url, action, cdata)
         if token:
             solver_used = "2captcha"
 
