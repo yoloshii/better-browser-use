@@ -256,7 +256,14 @@ File downloads are auto-saved to a session temp directory. Check downloads via `
 - Refs assigned sequentially: `@e1`, `@e2`, `@e3`, ...
 - Reset on every new snapshot
 - Server persists ref_map from each snapshot — actions use latest automatically
-- If action fails with "ref not found", take a new snapshot
+- **Stale-ref handling** (`click` / `fill` / `type`) — `@eN` is a per-snapshot ordinal,
+  so the server never reuses it against a rebuilt map (that could hit the wrong element):
+  - Ref absent from an **empty** map → one in-place snapshot rebuild, then act. Success
+    carries `ref_refreshed: true` — re-snapshot to re-sync your other refs.
+  - Ref absent from a **non-empty** map → `snapshot_required: true`, no action taken.
+    Take a fresh snapshot and use the new ref.
+  - Action fails on a stale/detached element → server rebuilds its ref map and returns
+    `snapshot_required: true`; re-snapshot before retrying.
 - Covers: buttons, links, inputs, checkboxes, headings, articles
 - `[cursor-interactive]` = non-ARIA clickables detected by `cursor: pointer`
 
@@ -272,6 +279,20 @@ Profiles store identity state across sessions:
 ```
 
 Use `"profile": "<name>"` in launch to restore, `"save_profile": "<name>"` in close to persist.
+
+## Resource Hygiene
+
+Browser memory pressure lives in the browser's child processes, not in this server — a leaked Camoufox/Chromium tree can OOM the box while the server's own RSS looks fine. The session GC sweep (every `SESSION_SWEEP_INTERVAL`s) additionally:
+
+- **Monitors** the summed RSS of this server's browser process subtree and logs a `WARNING` when it crosses `BROWSER_RSS_WARN_THRESHOLD_MB`.
+- **Reaps orphan browsers** (`REAP-ONLY`) — kills leftover browser processes **only when no session is active** and no launch is in flight. It never restarts or touches a live session's browser (that would destroy warmed cookies/fingerprint continuity), and only ever targets processes descended from this server.
+
+Requires `psutil` (optional — degrades to a no-op if missing).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BROWSER_RSS_WARN_THRESHOLD_MB` | `1500` | Browser-tree RSS (MB) that triggers a memory-pressure warning |
+| `BROWSER_USE_LAUNCH_REAP_GRACE_SEC` | `30` | Grace window after a launch before the orphan reaper may act |
 
 ## Humanization
 
@@ -426,6 +447,7 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 - aiohttp (`pip install aiohttp`) — HTTP server
 - markdownify (`pip install markdownify`) — HTML→Markdown for `extract` action
 - pyee 13.x (`pip install 'pyee>=13,<14'`) — shared event emitter for Playwright + Patchright
+- psutil (`pip install psutil`) — *optional*; browser process-tree memory monitor + orphan reaper (degrades to no-op without it)
 
 **Tier 1 — Playwright (Chromium):**
 - playwright 1.51.x (`pip install 'playwright>=1.51,<1.56' && playwright install chromium`)

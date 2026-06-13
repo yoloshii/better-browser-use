@@ -60,6 +60,8 @@ Element has no ARIA role?
 | `code: RATE_LIMITED` | Too many actions on domain | Wait `wait_seconds`, then retry |
 | `spa_redirect: true` | Navigate landed on different URL (SPA redirect) | Use `new_url` as the real destination |
 | `spa_navigation: true` | Snapshot URL differs from last navigate URL | SPA routed after initial load; `spa_from`/`spa_to` show the drift |
+| `ref_refreshed: true` | A stale ref was safely re-resolved against a rebuilt snapshot | Re-snapshot to re-sync your other refs |
+| `snapshot_required: true` | Ref/element was stale and couldn't be safely re-resolved | Take a new snapshot, then use the fresh ref |
 
 ## Common Patterns
 
@@ -93,7 +95,9 @@ evaluate with deep_query: true →
 
 - Refs like `@e1` are assigned per-snapshot and reset each time
 - Always use refs from the MOST RECENT snapshot
-- If "ref not found" → take a new snapshot
+- If "ref not found" → take a new snapshot. `click`/`fill`/`type` auto-recover only when
+  the ref map is empty; otherwise they return `snapshot_required` rather than risk acting
+  on the wrong element (`@eN` is a per-snapshot ordinal)
 - `[cursor-interactive]` refs are non-ARIA clickable elements detected by CSS
 
 ## Key Files
@@ -175,7 +179,7 @@ curl -s -X POST http://127.0.0.1:8500/ -H 'Content-Type: application/json' \
 
 ## Dependencies
 
-Core: `aiohttp`, `pydantic>=2.0`, `markdownify`, `pyee>=13,<14`, `python-dotenv`
+Core: `aiohttp`, `pydantic>=2.0`, `markdownify`, `pyee>=13,<14`, `python-dotenv`, `psutil` (optional — browser memory monitor + orphan reaper)
 Tier 1: `playwright>=1.51,<1.56` + chromium (avoid 1.56+ WSL2 regression)
 Tier 2: `cloakbrowser` (C++ patched Chromium, auto-downloaded) / `patchright` optional fallback (unsupported platform or `CLOAKBROWSER_ENABLED=0`)
 Tier 3: `camoufox[geoip]` + `playwright`

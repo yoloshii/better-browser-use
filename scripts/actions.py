@@ -104,6 +104,114 @@ async def _resolve_ref(page, ref_str: str, ref_map: dict) -> Any:
     return locator
 
 
+# Substrings that mark a Playwright action failure as a stale/detached/not-found
+# element (vs. a genuine logic error) — used to decide when a ref map refresh is
+# worth attempting.
+_STALE_ACTION_MARKERS = (
+    "not attached", "detached", "no node", "not found", "timeout",
+    "waiting for", "element is not", "not visible", "no element",
+)
+
+
+def _looks_stale_action(exc) -> bool:
+    s = str(exc).lower()
+    return any(m in s for m in _STALE_ACTION_MARKERS)
+
+
+async def _refresh_ref_map(page, session: dict):
+    """Take ONE timeout-bounded re-snapshot, then persist the rebuilt ref map.
+
+    Returns the new ref map, or None on failure/timeout. The caller already holds
+    the per-session lock (every action is dispatched via server._with_session_lock),
+    so this acquires no lock of its own. The rebuilt map is written to
+    session["ref_map"] and the session flagged dirty so the server persists it.
+    """
+    try:
+        snap = await asyncio.wait_for(
+            take_snapshot(
+                page,
+                compact=True,
+                max_depth=10,
+                cursor_interactive=True,
+                webmcp_tools=session.get("webmcp_tools") or None,
+                session_id=session.get("session_id"),
+            ),
+            timeout=10.0,
+        )
+    except Exception:
+        return None  # ARIA snapshot failed or hung — don't wedge the session lock
+    if not snap.get("success"):
+        return None
+    new_map = snap.get("refs", {})
+    session["ref_map"] = new_map
+    session["_ref_map_dirty"] = True
+    return new_map
+
+
+async def _resolve_ref_with_refresh(page, ref_str: str, session: dict):
+    """Resolve a ref, auto-refreshing ONLY when it is safe to do so.
+
+    Refs are ordinal keys (@e1, @e2, ...) into a per-snapshot map. Rebuilding the
+    map and reusing @eN against it would silently act on a DIFFERENT element if
+    the page changed since the agent's snapshot — a wrong-element hazard. So:
+
+      - ref present in the current map → resolve and act (no refresh).
+      - ref absent but the current map is EMPTY → safe to rebuild once (no ordinal
+        can collide) → resolve against the fresh map and act, flagged refreshed.
+      - ref absent from a NON-EMPTY map → the agent is out of sync; refuse to guess
+        and ask for a fresh snapshot (snapshot_required).
+
+    Returns (locator_or_None, ref_refreshed: bool, error_or_None). When the error
+    dict is present the caller returns it verbatim.
+    """
+    ref_map = session.get("ref_map", {})
+    locator = await _resolve_ref(page, ref_str, ref_map)
+    if locator is not None:
+        return locator, False, None
+
+    if ref_map:
+        # Non-empty map missing this ref → ordinal reuse would be unsafe.
+        return None, False, {
+            "success": False,
+            "error": f"Ref {ref_str} is not in the current snapshot. Take a new snapshot.",
+            "snapshot_required": True,
+        }
+
+    # Empty map → clean recovery, nothing to collide with.
+    new_map = await _refresh_ref_map(page, session)
+    if new_map is None:
+        return None, False, {
+            "success": False,
+            "error": f"Ref {ref_str} not found. Take a new snapshot.",
+            "ref_refresh_attempted": True,
+        }
+    locator = await _resolve_ref(page, ref_str, new_map)
+    if locator is None:
+        return None, True, {
+            "success": False,
+            "error": f"Ref {ref_str} not found. Take a new snapshot.",
+            "ref_refresh_attempted": True,
+        }
+    return locator, True, None
+
+
+async def _stale_action_error(page, ref_str: str, session: dict, exc) -> dict:
+    """Build the error dict for an action that failed on a likely-stale element.
+
+    A resolved ref maps to a live `get_by_role(role, name).nth(n)` query, so a
+    detached/not-found failure means that exact query found nothing now. Silently
+    retrying the same query is futile; retrying a re-ordinalized @eN against a
+    rebuilt map is the wrong-element hazard. So instead of blind-retrying we
+    rebuild the server's ref map once (best-effort, bounded) — leaving it coherent
+    for the agent's next step — and tell the agent to re-snapshot.
+    """
+    err = {"success": False, "error": to_ai_friendly_error(exc)}
+    if _looks_stale_action(exc):
+        await _refresh_ref_map(page, session)
+        err["snapshot_required"] = True
+    return err
+
+
 # ---------------------------------------------------------------------------
 # Core actions (Phase 1)
 # ---------------------------------------------------------------------------
@@ -155,10 +263,9 @@ async def action_click(page, params: dict, session: dict) -> dict:
     if not ref:
         return {"success": False, "error": "Missing required param: ref"}
 
-    ref_map = session.get("ref_map", {})
-    locator = await _resolve_ref(page, ref, ref_map)
-    if locator is None:
-        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+    locator, ref_refreshed, ref_err = await _resolve_ref_with_refresh(page, ref, session)
+    if ref_err:
+        return ref_err
 
     old_url = page.url
     old_tab_count = len(page.context.pages)
@@ -178,14 +285,17 @@ async def action_click(page, params: dict, session: dict) -> dict:
     except Exception as e:
         new_url = page.url
         if new_url != old_url:
-            return {
+            nav_result = {
                 "success": True,
                 "extracted_content": f"Clicked {ref} — page navigated",
                 "page_changed": True,
                 "new_url": new_url,
                 "new_title": await page.title(),
             }
-        return {"success": False, "error": to_ai_friendly_error(e)}
+            if ref_refreshed:
+                nav_result["ref_refreshed"] = True
+            return nav_result
+        return await _stale_action_error(page, ref, session, e)
 
     settle = random.uniform(0.2, 0.5) if session.get("humanize") else 0.3
     await asyncio.sleep(settle)
@@ -197,6 +307,8 @@ async def action_click(page, params: dict, session: dict) -> dict:
         "extracted_content": f"Clicked {ref}",
         "page_changed": new_url != old_url,
     }
+    if ref_refreshed:
+        result["ref_refreshed"] = True
 
     if new_url != old_url:
         result["new_url"] = new_url
@@ -218,19 +330,21 @@ async def action_fill(page, params: dict, session: dict) -> dict:
     if not ref:
         return {"success": False, "error": "Missing required param: ref"}
 
-    ref_map = session.get("ref_map", {})
-    locator = await _resolve_ref(page, ref, ref_map)
-    if locator is None:
-        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+    locator, ref_refreshed, ref_err = await _resolve_ref_with_refresh(page, ref, session)
+    if ref_err:
+        return ref_err
 
     try:
         await locator.fill(value, timeout=10_000)
-        return {
+        result = {
             "success": True,
             "extracted_content": f"Filled {ref} with value",
         }
+        if ref_refreshed:
+            result["ref_refreshed"] = True
+        return result
     except Exception as e:
-        return {"success": False, "error": to_ai_friendly_error(e)}
+        return await _stale_action_error(page, ref, session, e)
 
 
 async def action_type(page, params: dict, session: dict) -> dict:
@@ -245,10 +359,9 @@ async def action_type(page, params: dict, session: dict) -> dict:
     if not ref:
         return {"success": False, "error": "Missing required param: ref"}
 
-    ref_map = session.get("ref_map", {})
-    locator = await _resolve_ref(page, ref, ref_map)
-    if locator is None:
-        return {"success": False, "error": f"Ref {ref} not found. Take a new snapshot."}
+    locator, ref_refreshed, ref_err = await _resolve_ref_with_refresh(page, ref, session)
+    if ref_err:
+        return ref_err
 
     try:
         if session.get("humanize"):
@@ -264,12 +377,15 @@ async def action_type(page, params: dict, session: dict) -> dict:
                 await locator.press_sequentially(text, delay=delay, timeout=10_000)
         else:
             await locator.press_sequentially(text, delay=delay, timeout=10_000)
-        return {
+        result = {
             "success": True,
             "extracted_content": f"Typed {len(text)} chars into {ref}",
         }
+        if ref_refreshed:
+            result["ref_refreshed"] = True
+        return result
     except Exception as e:
-        return {"success": False, "error": to_ai_friendly_error(e)}
+        return await _stale_action_error(page, ref, session, e)
 
 
 async def action_scroll(page, params: dict, session: dict) -> dict:

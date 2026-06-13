@@ -469,6 +469,7 @@ scripts/
 - aiohttp (`pip install aiohttp`)
 - markdownify (`pip install markdownify`)
 - python-dotenv (`pip install python-dotenv`) — optional, auto-loads `.env` file
+- psutil (`pip install psutil`) — optional, browser process-tree memory monitor + orphan reaper (degrades to no-op without it)
 
 **Tier 1 — Playwright (Chromium):**
 - `pip install 'playwright>=1.51,<1.56' && playwright install chromium`

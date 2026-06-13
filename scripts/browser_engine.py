@@ -27,7 +27,24 @@ from errors import _scrub_credentials
 import logging
 import subprocess
 
+try:
+    import psutil  # optional — process-tree memory hygiene degrades to no-op without it
+except ImportError:  # pragma: no cover - environment-dependent
+    psutil = None  # type: ignore[assignment]
+
 log = logging.getLogger(__name__)
+
+# Browser binary names (lowercased substrings) across the 3 tiers. Used to
+# classify our browser child processes for the REAP-ONLY memory monitor.
+_BROWSER_PROC_NAMES = ("camoufox", "firefox", "chrome", "chromium", "headless_shell")
+
+# Orphan-reaper guards for the spawn→register window. A launch spawns the
+# browser process BEFORE inserting its session into `_sessions`, so during that
+# window `_sessions` can look empty while a valid browser exists. `_launches_in_flight`
+# is the authoritative guard (incremented/decremented around that window via
+# try/finally); `_last_launch_at` is a belt-and-suspenders timestamp grace.
+_launches_in_flight: int = 0
+_last_launch_at: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -1078,6 +1095,8 @@ async def launch(
 
     Returns dict: {success, session_id, tier, tier_engine, url, title}
     """
+    global _last_launch_at
+    _last_launch_at = time.monotonic()
     session_id = uuid.uuid4().hex[:12]
 
     # Resolve profile path (with traversal protection)
@@ -1095,50 +1114,60 @@ async def launch(
     if tier_impl is None:
         return {"success": False, "error": f"Unknown tier: {tier}"}
 
+    # Guard the spawn→register window: a browser process exists from tier_impl.init()
+    # onward, but its session is not in `_sessions` until the dict below is built —
+    # the orphan reaper must not treat that browser as an orphan. The finally
+    # decrements once the session is registered OR the launch fails, so no error
+    # in between can leak the counter and wedge the reaper.
+    global _launches_in_flight
+    _launches_in_flight += 1
     try:
-        pw, browser, context = await tier_impl.init(
-            profile_path=profile_path,
-            viewport=viewport,
-        )
-    except NotImplementedError as e:
-        return {"success": False, "error": _scrub_credentials(str(e))}
-    except Exception as e:
-        return {"success": False, "error": _scrub_credentials(f"Browser launch failed: {e}")}
+        try:
+            pw, browser, context = await tier_impl.init(
+                profile_path=profile_path,
+                viewport=viewport,
+            )
+        except NotImplementedError as e:
+            return {"success": False, "error": _scrub_credentials(str(e))}
+        except Exception as e:
+            return {"success": False, "error": _scrub_credentials(f"Browser launch failed: {e}")}
 
-    page = await context.new_page()
+        page = await context.new_page()
 
-    # Set up auto popup dismissal and download handling
-    _event_data: dict = {}
-    _setup_popup_handler(context, _event_data)
-    _setup_download_handler(context, _event_data, session_id)
-    _setup_console_handler(context, _event_data)
+        # Set up auto popup dismissal and download handling
+        _event_data: dict = {}
+        _setup_popup_handler(context, _event_data)
+        _setup_download_handler(context, _event_data, session_id)
+        _setup_console_handler(context, _event_data)
 
-    from models import ActionLoopDetector
+        from models import ActionLoopDetector
 
-    _sessions[session_id] = {
-        "pw": pw,
-        "browser": browser,
-        "context": context,
-        "page": page,
-        "tier": tier,
-        "tier_name": tier_impl.name,
-        "tier_impl": tier_impl,
-        "profile": profile,
-        "lock": asyncio.Lock(),
-        "created_at": time.monotonic(),
-        "last_activity": time.monotonic(),
-        "action_count": 0,
-        "ref_map": {},
-        "humanize": Config.HUMANIZE_ACTIONS,  # Disabled auto-humanize for Tier 2 (timeout issues)
-        "humanize_intensity": Config.DEFAULT_HUMANIZE,
-        "webmcp_available": None,  # None=unknown, True/False after probe
-        "webmcp_tools": {},        # tool name -> {name, description, inputSchema, type}
-        "dismissed_popups": _event_data.get("dismissed_popups", []),
-        "downloads": _event_data.get("downloads", []),
-        "download_dir": _event_data.get("download_dir"),
-        "console_logs": _event_data.get("console_logs", []),
-        "loop_detector": ActionLoopDetector(),
-    }
+        _sessions[session_id] = {
+            "pw": pw,
+            "browser": browser,
+            "context": context,
+            "page": page,
+            "tier": tier,
+            "tier_name": tier_impl.name,
+            "tier_impl": tier_impl,
+            "profile": profile,
+            "lock": asyncio.Lock(),
+            "created_at": time.monotonic(),
+            "last_activity": time.monotonic(),
+            "action_count": 0,
+            "ref_map": {},
+            "humanize": Config.HUMANIZE_ACTIONS,  # Disabled auto-humanize for Tier 2 (timeout issues)
+            "humanize_intensity": Config.DEFAULT_HUMANIZE,
+            "webmcp_available": None,  # None=unknown, True/False after probe
+            "webmcp_tools": {},        # tool name -> {name, description, inputSchema, type}
+            "dismissed_popups": _event_data.get("dismissed_popups", []),
+            "downloads": _event_data.get("downloads", []),
+            "download_dir": _event_data.get("download_dir"),
+            "console_logs": _event_data.get("console_logs", []),
+            "loop_detector": ActionLoopDetector(),
+        }
+    finally:
+        _launches_in_flight -= 1
 
     _save_session_meta(session_id, {
         "session_id": session_id,
@@ -1363,6 +1392,108 @@ async def sweep_idle_sessions() -> list[str]:
                 pass  # close() handles its own error reporting
 
     return reaped
+
+
+# ---------------------------------------------------------------------------
+# Browser process-tree memory hygiene (REAP-ONLY)
+#
+# Browser memory pressure lives in the browser's child processes, not in this
+# Python server — a leaked Camoufox/Chromium tree can OOM the box while our own
+# RSS looks fine. The Playwright driver spawns every browser as a descendant of
+# this process, and prewarm holds no live browser, so `_sessions` is the
+# complete registry of browsers that *should* exist: when it is empty, any
+# surviving browser descendant is an orphan and safe to reap. We never restart
+# or kill a live session's browser — reaping is gated on zero active sessions.
+# ---------------------------------------------------------------------------
+
+def _iter_browser_descendants() -> list:
+    """Return psutil.Process handles for browser processes descended from us.
+
+    Empty list when psutil is unavailable or the process table can't be read.
+    """
+    if psutil is None:
+        return []
+    try:
+        me = psutil.Process()
+        children = me.children(recursive=True)
+    except Exception:
+        return []
+    out = []
+    for child in children:
+        try:
+            name = (child.name() or "").lower()
+        except Exception:
+            continue  # process exited or access denied
+        if any(b in name for b in _BROWSER_PROC_NAMES):
+            out.append(child)
+    return out
+
+
+def collect_resource_snapshot() -> dict:
+    """Best-effort memory snapshot of this server's browser process subtree.
+
+    Returns anonymized aggregates only — no PIDs, paths, or command lines.
+    `browser_rss_mb`/`browser_proc_count` are None when psutil is unavailable.
+    """
+    active = len(_sessions)
+    if psutil is None:
+        return {
+            "browser_rss_mb": None,
+            "browser_proc_count": None,
+            "active_sessions": active,
+            "psutil": False,
+        }
+    total_bytes = 0
+    count = 0
+    for proc in _iter_browser_descendants():
+        try:
+            total_bytes += proc.memory_info().rss
+            count += 1
+        except Exception:
+            continue  # vanished mid-walk
+    return {
+        "browser_rss_mb": round(total_bytes / (1024 * 1024)),
+        "browser_proc_count": count,
+        "active_sessions": active,
+        "psutil": True,
+    }
+
+
+async def reap_orphan_browsers() -> dict:
+    """Kill browser processes that linger when no session owns them.
+
+    REAP-ONLY: never restarts, and never runs while a session is active or a
+    launch is in flight (grace window after `_last_launch_at`). Only touches
+    browser processes descended from this server, so it cannot hit an unrelated
+    browser the operator is running.
+    """
+    if psutil is None:
+        return {"reaped": 0, "psutil": False}
+    if (_sessions or _launches_in_flight
+            or (time.monotonic() - _last_launch_at) < Config.LAUNCH_REAP_GRACE_SEC):
+        return {"reaped": 0, "skipped": "active_or_recent_launch"}
+
+    orphans = _iter_browser_descendants()
+    if not orphans:
+        return {"reaped": 0}
+
+    # Graceful terminate, a brief non-blocking grace, then force-kill survivors.
+    # No psutil.wait_procs/to_thread — keep the event loop unblocked and avoid a
+    # thread-executor dependency. psutil guards each handle against PID reuse, so
+    # is_running()/kill() can't hit an unrelated process.
+    for p in orphans:
+        try:
+            p.terminate()
+        except Exception:
+            pass
+    await asyncio.sleep(1.0)
+    for p in orphans:
+        try:
+            if p.is_running():
+                p.kill()
+        except Exception:
+            pass
+    return {"reaped": len(orphans)}
 
 
 async def list_sessions() -> list[dict]:

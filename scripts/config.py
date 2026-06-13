@@ -144,6 +144,14 @@ class Config:
     SESSION_SWEEP_INTERVAL = 60  # seconds between GC sweeps
     MAX_SESSIONS = 10
 
+    # Browser process-tree memory hygiene (REAP-ONLY — never auto-restarts).
+    # Warn when the summed RSS of this server's browser child processes crosses
+    # the threshold; orphan browsers are reaped only when no session is active.
+    BROWSER_RSS_WARN_THRESHOLD_MB = int(os.getenv("BROWSER_RSS_WARN_THRESHOLD_MB", "1500"))
+    # Grace window after a launch starts during which the orphan reaper stays its
+    # hand — covers the gap between spawning a browser and registering its session.
+    LAUNCH_REAP_GRACE_SEC = int(os.getenv("BROWSER_USE_LAUNCH_REAP_GRACE_SEC", "30"))
+
     # Evaluate gating
     EVALUATE_ENABLED = os.getenv("BROWSER_USE_EVALUATE", "1") == "1"
 

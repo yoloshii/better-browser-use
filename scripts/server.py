@@ -216,6 +216,10 @@ async def handle_request_inner(request_data: dict) -> dict:
             if action_name == "snapshot" and "ref_map" in session_ctx:
                 browser_engine.set_session_ref_map(session_id, session_ctx["ref_map"])
                 result["refs"] = session_ctx["ref_map"]
+            # Persist a ref_map that a stale-ref auto-refresh rebuilt mid-action,
+            # so subsequent actions (and batched steps) see the fresh refs.
+            elif session_ctx.get("_ref_map_dirty") and "ref_map" in session_ctx:
+                browser_engine.set_session_ref_map(session_id, session_ctx["ref_map"])
 
             # Lightweight block detection after page-changing actions
             if result.get("page_changed"):
@@ -590,6 +594,26 @@ async def _session_sweeper(app: web.Application) -> None:
                           file=sys.stderr)
             except Exception as e:
                 print(f"[gc] sweep error: {e}", file=sys.stderr)
+
+            # Browser process-tree memory hygiene: warn on pressure, reap
+            # orphan browsers only when no session is active (REAP-ONLY).
+            try:
+                snap = browser_engine.collect_resource_snapshot()
+                rss = snap.get("browser_rss_mb")
+                if rss is not None and rss >= Config.BROWSER_RSS_WARN_THRESHOLD_MB:
+                    print(
+                        f"[gc] browser RSS {rss}MB across "
+                        f"{snap.get('browser_proc_count')} proc(s), "
+                        f"{snap.get('active_sessions')} active session(s) — over "
+                        f"{Config.BROWSER_RSS_WARN_THRESHOLD_MB}MB warn threshold",
+                        file=sys.stderr,
+                    )
+                reap = await browser_engine.reap_orphan_browsers()
+                if reap.get("reaped"):
+                    print(f"[gc] reaped {reap['reaped']} orphan browser process(es)",
+                          file=sys.stderr)
+            except Exception as e:
+                print(f"[gc] resource check error: {e}", file=sys.stderr)
     except asyncio.CancelledError:
         pass
 
