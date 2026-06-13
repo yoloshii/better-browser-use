@@ -140,6 +140,21 @@ PROXY_PASSWORD=your_password
 - For anti-bot sites requiring residential IPs, use a residential/ISP proxy provider
 - Set `BROWSER_USE_GEO` to override auto-detected locale (takes precedence over GeoIP)
 
+### Proxy strategies & geo-targeting
+
+`PROXY_STRATEGY` selects how each launch's proxy is built (all tiers):
+- `static` (default) — the single `PROXY_SERVER` above.
+- `port_pool` — `PROXY_HOST` + comma-separated `PROXY_PORTS` (first port used until live rotation lands).
+- `backconnect` — a residential endpoint (`PROXY_BACKCONNECT_HOST`/`PORT`) with `PROXY_PROVIDER=decodo|generic`, geo-targeted via `PROXY_COUNTRY`/`STATE`/`CITY`/`ZIP` (+ `PROXY_SESSION_DURATION_MINUTES`).
+
+Keep `PROXY_COUNTRY` aligned with `BROWSER_USE_GEO` — a country mismatch between the proxy exit and the browser timezone/locale is a fingerprint inconsistency, logged as a `WARNING` at launch. A non-static strategy that cannot build a proxy logs a loud `WARNING` and launches direct (so a misconfig never silently exposes the real IP).
+
+## CAPTCHA Solving
+
+Optional, bring-your-own pay-as-you-go keys: `CAPSOLVER_API_KEY` (primary, fast AI) and `TWOCAPTCHA_API_KEY` (human fallback). Without them the CAPTCHA-solving action is unavailable; everything else works.
+
+> **Full configuration reference:** [`.env.example`](.env.example) lists every supported environment variable (server/auth, proxy + strategies, geo, CAPTCHA, Tier 2, behavior toggles), each marked optional with format notes.
+
 ## Error Recovery
 
 - **RECOVERABLE**: Re-snapshot and retry with new refs
