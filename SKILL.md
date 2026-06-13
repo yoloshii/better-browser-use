@@ -526,7 +526,7 @@ All tiers auto-install their browser binaries on first use if not already presen
 
 ## WebMCP Integration
 
-WebMCP is a Chrome web standard (Origin Trial, Chrome 149-156) that lets pages expose structured tools for AI agents. When available, it replaces guesswork-based form filling with explicit contracts. The OT API is `document.modelContext`; pre-OT builds (146-148) used `navigator.modelContext`/`navigator.modelContextTesting`. browser-use uses a dual-path adapter across both. **Status: the OT path is stub-tested but NOT yet verified on a real 149+ build — see `references/WEBMCP_INTEGRATION.md`.**
+WebMCP is a Chrome web standard (Origin Trial, Chrome 149-156) that lets pages expose structured tools for AI agents. When available, it replaces guesswork-based form filling with explicit contracts. The OT API is `document.modelContext`; pre-OT builds (146-148) used `navigator.modelContext`/`navigator.modelContextTesting`. browser-use uses a dual-path adapter across both. **Status: VERIFIED on Chrome Beta 150 (OT) 2026-06-14 — stub tests 20/20 + real-OT E2E 12/12 (`--enable-features=WebMCPTesting`, headless); see `references/WEBMCP_INTEGRATION.md`.**
 
 ### Requirements
 - Chrome Beta/Dev/Canary on the host: 149+ for the OT API, 146-148 for the navigator fallback (Beta auto-updates toward 149)

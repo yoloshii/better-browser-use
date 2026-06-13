@@ -6,7 +6,7 @@ Browser-use skill integration with Chrome's WebMCP standard for structured tool 
 
 WebMCP exposes structured tools on websites. The Origin Trial (Chrome 149-156) unifies the API under `document.modelContext` — `registerTool()` (publisher) plus `getTools()` + `executeTool()` (consumer), all on one object. Pre-OT builds (Chrome 146-148) used the split `navigator.modelContext` (publisher) + `navigator.modelContextTesting` (consumer); `navigator.modelContext` is **deprecated in Chrome 150 but not yet removed**, and `navigator.modelContextTesting` is absent from current docs. Instead of inferring page structure from ARIA snapshots, the agent reads explicit tool contracts with JSON schemas and calls them directly. browser-use uses a **dual-path adapter** (document → navigator → interceptor) so it works across both API generations.
 
-**Status**: Origin Trial (Chrome 149.0.7827.102 → 156). Adapter implemented + stub-tested (`tests/test_webmcp_adapter.py`, 15/15 on bundled Chromium). **Real-browser OT conformance is UNVERIFIED** — no Chrome 149+ channel is available locally (highest is Beta 146, which only exercises the navigator fallback). Headless-vs-headful behavior, cross-origin enumeration, OT-token flow, and the exact `--enable-features` token are deferred until a 149+ channel exists.
+**Status**: Origin Trial (Chrome 149.0.7827.102 → 156). Adapter implemented and **VERIFIED on Chrome Beta 150 (OT), 2026-06-14**: stub tests (`tests/test_webmcp_adapter.py`, 20/20 on bundled Chromium) + real-OT E2E (`tests/test_webmcp_ot_live.py`, 12/12 driving the shipped handlers through real `document.modelContext`). Confirmed empirically: `--enable-features=WebMCPTesting` exposes the OT API; the `getTools()` → `executeTool(toolObject, json)` round-trip works **headless**; the descriptor carries `inputSchema` (string), `annotations.{readOnlyHint,untrustedContentHint}`, `origin`, and a live `window` ref. Still deferred (lower-value / out-of-scope): cross-origin enumeration, live `toolchange` subscription, `AbortSignal` cancellation, and OT-token flow for third-party production sites.
 
 ## Requirements
 
@@ -16,7 +16,7 @@ WebMCP exposes structured tools on websites. The Origin Trial (Chrome 149-156) u
 | Playwright | 1.56+ (we run 1.60) | Supports `channel` param for system Chrome |
 | browser-use server | Current | `BROWSER_USE_WEBMCP=1 BROWSER_USE_CHROME_CHANNEL=chrome-beta` |
 
-Local state (2026-06): only Chrome Beta 146.0.7680.0 available — exercises the navigator-fallback path, NOT the OT `document.modelContext` path.
+Local state (2026-06-14): Chrome Beta **150.0.7871.13** installed — the OT `document.modelContext` path is verified live (`tests/test_webmcp_ot_live.py`). (Stable here is 137 / repo candidate 149; Dev candidate 151.)
 
 ## Chrome Feature Flags
 
@@ -27,7 +27,7 @@ The Origin Trial API is gated behind a local-dev flag (production sites use an O
 | OT `document.modelContext` (149+) | `chrome://flags/#enable-webmcp-testing` → Enabled, relaunch | Local dev. The matching `--enable-features=<token>` for headless automation needs confirmation on a real 149+ build. |
 | pre-OT `navigator.modelContextTesting` (146-148) | `--enable-features=WebMCPTesting` | What `browser_engine.py` currently passes; correct for 146-148. |
 
-`browser_engine.py` appends `--enable-features=WebMCPTesting` when a Chrome channel/executable is set or `BROWSER_USE_WEBMCP=1`. **TODO (needs 149+):** confirm whether this token still enables the OT `document.modelContext` shape, or whether the flag name changed behind `chrome://flags/#enable-webmcp-testing`.
+`browser_engine.py` appends `--enable-features=WebMCPTesting` when a Chrome channel/executable is set or `BROWSER_USE_WEBMCP=1`. **CONFIRMED (Chrome Beta 150, 2026-06-14):** `--enable-features=WebMCPTesting` exposes `document.modelContext` (`getTools`/`executeTool`/`registerTool`) on a secure context, and also keeps the legacy `navigator.modelContextTesting` available. `--enable-features=WebMCP` alone also exposes `document.modelContext` but omits `navigator.modelContextTesting`. So the existing flag is correct — no change needed.
 
 ## API Surface
 
@@ -301,12 +301,12 @@ Tier 3 incompatibility is acceptable — sites requiring Camoufox-level anti-bot
 
 1. **Chrome-only** — WebMCP is a Chrome proposal, no Firefox/Safari support (Tier 3 Camoufox excluded)
 2. **Origin Trial, not stable** — API may still change through Chrome 156; near-zero site adoption
-3. **Real-OT conformance UNVERIFIED** — no local 149+ channel; the OT `document.modelContext` path is stub-tested only. E2E on a real 149+ build is pending.
-4. **Headless** — docs say tools need "a visible interface" / no "headless state"; whether that breaks our default headless Playwright mode (real DOM/JS, no UI) is unconfirmed for the OT. Test headless + headful/Xvfb on 149+ before claiming headless support.
+3. **Real-OT conformance VERIFIED** (Chrome Beta 150, 2026-06-14) — `tests/test_webmcp_ot_live.py` drives the shipped handlers through real `document.modelContext` (discover/call/origin-fail-closed), 12/12.
+4. **Headless — CONFIRMED working.** The `getTools()`/`executeTool()` round-trip runs under HeadlessChrome/150 (no UI). The docs' "no headless state" means "no browser context at all" (a pure API agent), NOT headless Chrome with a real page.
 5. **`toolchange` event** — not subscribed; manual re-discover after navigation still required
 6. **AbortSignal cancellation** — `executeTool({signal})` not exposed via the browser-use API (15s timeout used instead)
 7. **Cross-origin** — `fromOrigins`/`exposedTo`/`allow="tools"` not wired
-8. **`--enable-features` token** — pre-OT `WebMCPTesting`; unconfirmed whether it enables the OT shape on 149+
+8. **`--enable-features` token** — RESOLVED: `WebMCPTesting` confirmed to enable the OT `document.modelContext` shape on Chrome 150 (see Feature Flags)
 9. **Declarative tool execution** — native `executeTool()` for declarative forms can hang if the page's `respondWith()` never resolves; the 15s timeout in `webmcp_call` prevents server hangs
 10. **`available` on all pages** — `document.modelContext`/`navigator.modelContext` exists browser-wide; check `tool_count` (not `available`) to know if tools are registered
 
@@ -328,9 +328,13 @@ Tier 3 incompatibility is acceptable — sites requiring Camoufox-level anti-bot
 
 ## Test suite
 
-### Adapter stub tests — `tests/test_webmcp_adapter.py` (current, 15/15)
+### Adapter stub tests — `tests/test_webmcp_adapter.py` (current, 20/20)
 
-Exercises the exact shipped JS (`_WEBMCP_DISCOVER_JS`/`_WEBMCP_CALL_JS` + `WEBMCP_INIT_SCRIPT`) against a fake `document.modelContext`/`navigator.modelContextTesting`/`window.__webmcp` injected into bundled Chromium. No server, no Chrome 149 — validates the document-path branch, in-page tool-object resolution, `untrustedContentHint` capture, navigator fallback, and `requestUserInteraction` gating. Run: `python3 tests/test_webmcp_adapter.py` (conda base).
+Exercises the exact shipped JS (`_WEBMCP_DISCOVER_JS`/`_WEBMCP_CALL_JS` + `WEBMCP_INIT_SCRIPT`) against a fake `document.modelContext`/`navigator.modelContextTesting`/`window.__webmcp` injected into bundled Chromium. No server, no Chrome 149 — validates the document-path branch, in-page tool-object resolution, `untrustedContentHint` capture, navigator fallback, `requestUserInteraction` gating, origin fail-closed, and strict `allow_sensitive`. Run: `python3 tests/test_webmcp_adapter.py` (conda base).
+
+### Real-OT E2E — `tests/test_webmcp_ot_live.py` (12/12, Chrome Beta 150, 2026-06-14)
+
+Drives the SHIPPED `action_webmcp_discover`/`action_webmcp_call` against a REAL Chrome Beta (>=149) running the OT (`--enable-features=WebMCPTesting`): registers a tool via real `document.modelContext.registerTool`, then verifies document-path discovery (`source==document`), `untrustedContentHint`+`origin` capture from the real API, `inputSchema` string→object, the real `executeTool` round-trip, and origin fail-closed. Skips cleanly (exit 0) if Chrome < 149. Run: `python3 tests/test_webmcp_ot_live.py` (conda base).
 
 ### Live integration — `tests/test_webmcp.py` (PENDING real OT)
 
