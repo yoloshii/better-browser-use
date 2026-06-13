@@ -467,6 +467,7 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 
 **Install order** (to avoid pyee conflicts):
 ```bash
+python -m venv .venv && source .venv/bin/activate   # isolate — deps are version-pinned
 pip install cloakbrowser                # Tier 2 primary (pulls pyee 12 via playwright dep)
 pip install 'pyee>=13,<14'              # Override to 13 — required for patchright compatibility
 pip install 'playwright>=1.51,<1.56' && playwright install chromium

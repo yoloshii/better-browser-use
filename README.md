@@ -34,6 +34,11 @@ The agent loop: **snapshot** (observe) → **reason** (decide) → **act** (exec
 ```bash
 git clone https://github.com/yoloshii/better-browser-use.git
 cd better-browser-use
+
+# Use an isolated environment — the deps are version-pinned (playwright <1.56,
+# plus a pyee override) and will conflict with globally-installed packages.
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+
 pip install cloakbrowser 'pyee>=13,<14'
 pip install 'playwright>=1.51,<1.56' && playwright install chromium
 pip install 'aiohttp>=3.13' 'pydantic>=2.12' 'markdownify>=1.2' python-dotenv
@@ -49,6 +54,7 @@ cp .env.example .env
 ### Start Server
 
 ```bash
+# Run inside the .venv from Install — re-activate with `source .venv/bin/activate` in a new shell.
 python scripts/server.py --port 8500
 ```
 
