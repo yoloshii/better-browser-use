@@ -2,7 +2,7 @@
 Multi-tier browser engine with BrowserTier ABC pattern.
 
 Tier 1: Vanilla Playwright Chromium — no stealth, fastest startup.
-Tier 2: Patchright — patched Chromium with stealth (no user_agent override).
+Tier 2: CloakBrowser — C++ patched Chromium (binary-level stealth); Patchright fallback.
 Tier 3: Camoufox — anti-detect Firefox with fingerprint spoofing + GeoIP.
 
 All tiers implement BrowserTier ABC: detect() → init() → teardown().
@@ -624,6 +624,24 @@ class Tier1Playwright(BrowserTier):
             if storage_path.exists():
                 context_opts["storage_state"] = str(storage_path)
 
+        # Proxy applies to ALL tiers (geo-targeting / IP rotation), not just the
+        # stealth tiers — mirrors Tier 2/3. _planned_proxy() returns None when no
+        # proxy is configured (launch direct); a non-static strategy that cannot be
+        # built warns + falls back inside the planner, so a misconfig never silently
+        # exposes the real IP.
+        proxy = _planned_proxy()
+        if proxy:
+            context_opts["proxy"] = proxy
+            # Tier 1 uses static geo (no GeoIP auto-detect like Tier 2/3). If the proxy
+            # exits in another country and BROWSER_USE_GEO is unset, the browser
+            # locale/timezone won't match the exit IP — warn rather than silently mismatch.
+            if not Config.GEO:
+                log.warning(
+                    "Tier 1 proxy active but BROWSER_USE_GEO unset — Tier 1 uses static geo "
+                    "(no GeoIP), so browser locale/timezone may not match the proxy exit "
+                    "country. Set BROWSER_USE_GEO to match, or use Tier 2/3 for GeoIP."
+                )
+
         context = await browser.new_context(**context_opts)
 
         # Inject WebMCP interceptor when enabled
@@ -726,12 +744,13 @@ class Tier2Patchright(BrowserTier):
 class Tier2CloakBrowser(BrowserTier):
     """CloakBrowser — C++ patched Chromium with binary-level stealth.
 
-    26 source-level patches: canvas/WebGL/audio fingerprinting, TLS matching
+    58 source-level patches: canvas/WebGL/audio fingerprinting, TLS matching
     (ja3n/ja4), navigator hardening, CDP removal.  0.9 reCAPTCHA v3 scores.
 
     Falls back to Patchright if CloakBrowser is not installed.
-    Uses vanilla Playwright to drive CloakBrowser's binary (not the wrapper's
-    own launcher) so we keep full control of the lifecycle.
+    Driven via CloakBrowser's own launch_context_async() helper (not hand-rolled
+    pw.chromium.launch) so the binary's stealth launch — IGNORE_DEFAULT_ARGS,
+    WebRTC-IP injection, binary geoip/timezone flags — stays intact (see init()).
     """
 
     @property
@@ -1225,7 +1244,7 @@ async def launch(
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=Config.DEFAULT_TIMEOUT)
         except Exception as e:
-            result["warning"] = f"Navigation issue: {e}"
+            result["warning"] = _scrub_credentials(f"Navigation issue: {e}")
         try:
             result["url"] = page.url
             result["title"] = await page.title()

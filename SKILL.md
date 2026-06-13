@@ -296,7 +296,7 @@ Requires `psutil` (optional — degrades to a no-op if missing).
 
 ## Humanization
 
-Tier 2+ sessions auto-enable humanized actions. Set `BROWSER_USE_HUMANIZE=1` to force for all tiers.
+Action-level humanization is opt-in via `BROWSER_USE_HUMANIZE=1` (all tiers); it is NOT auto-enabled for Tier 2 (auto-enabling caused action timeouts). Tier 3 Camoufox humanizes natively at the browser level regardless.
 
 When active:
 - **click**: Bezier curve mouse movement from actual cursor position, random offset, variable settle delay
@@ -326,14 +326,45 @@ If rate limited, response includes `{"code": "RATE_LIMITED", "wait_seconds": N}`
 
 ## Block Detection & CAPTCHA Solving
 
-After page-changing actions, server runs lightweight block detection.
-If blocked, response includes `{"blocked": true, "protection": "<type>"}`.
+After page-changing actions — and after `launch(url=...)` — the server runs lightweight block detection on the live page (title/url/body; no extra network request). If blocked, the response carries a structured **escalation assessment**:
 
-Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic.
+```json
+{
+  "blocked": true,
+  "protection": "datadome",          // cloudflare | datadome | akamai | perimeterx | captcha | generic
+  "recommended_tier": 3,             // advisory: the tier to relaunch at
+  "needs_proxy": true,               // advisory: a residential proxy is recommended
+  "needs_sticky": true,              // advisory: a sticky residential session helps
+  "escalation_reason": "DataDome (IP-reputation + device fingerprint) — Tier 3 + residential proxy"
+}
+```
 
-**Auto-solve**: When CAPTCHA/Cloudflare is detected and `CAPSOLVER_API_KEY` is set, the server automatically attempts to solve it inline. On success: `{"blocked": false, "captcha_solved": true, "solver": "capsolver", "solve_time_s": 3.2}`. On failure: `{"blocked": true, "captcha_solve_failed": true}`.
+Escalation is **advisory, never automatic** — the server never relaunches a session for you (that would destroy warmed cookies/fingerprint). The agent reads the assessment and decides. See **Escalation** below.
+
+**Auto-solve** (captcha/cloudflare only): opt-in — runs only when `CAPSOLVER_API_KEY`/`TWOCAPTCHA_API_KEY` are set (empty by default; provide them in `.env`). When set, a captcha/cloudflare block triggers an inline solve **under the session lock** — a paid call, CapSolver polling up to ~120s, not a lightweight step. On success: `{"blocked": false, "captcha_solved": true, "solver": "capsolver", "solve_time_s": 3.2}`. On failure: `{"blocked": true, "captcha_solve_failed": true}`.
 
 **Manual solve**: Use `{"action": "solve_captcha"}` to explicitly trigger solving on any page with a CAPTCHA. Supports reCAPTCHA v2/v3, hCaptcha, Cloudflare Turnstile.
+
+## Escalation
+
+Block detection is advisory: the agent escalates, the server does not. Live proxy **rotation is not implemented yet** — changing proxy/strategy today means a **relaunch** (or config change), not a runtime switch. Decision tree on a block:
+
+```
+recommended_tier > current tier?
+  → relaunch at recommended_tier (new session)
+
+needs_proxy = true AND no proxy active/configured?
+  → relaunch with a residential proxy (PROXY_* in .env)
+
+IP-reputation block (datadome / perimeterx / akamai)?
+  → usually needs BOTH a residential proxy AND Tier 3; rotate the exit IP on repeat blocks
+
+cloudflare (plain)        → Tier 2 is usually enough (+ proxy)
+cloudflare_uam (interstitial) → Tier 3, headful or CAMOUFOX_HEADLESS=virtual, regardless of IP
+captcha                   → solve in place (if keys set) or escalate to Tier 2, THEN solve
+```
+
+Solve CAPTCHA only after the browser/proxy posture is plausible — otherwise you burn paid solver attempts on a session that still looks wrong. Proxy applies to **all tiers** (Tier 1 included) for geo-targeting / IP rotation; a misconfigured non-static strategy warns and launches direct rather than silently exposing the real IP. **Tier 1 caveat:** Tier 1 applies the proxy at the network level only and uses static geo (no GeoIP) — set `BROWSER_USE_GEO` to match the proxy's country for locale/timezone consistency (Tier 2/3 auto-detect geo from the proxy exit, and warn on mismatch).
 
 ## Error Handling
 
@@ -342,9 +373,9 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | Element not found / ref invalid | RECOVERABLE | Re-snapshot, retry with new refs |
 | Navigation timeout | RECOVERABLE | Retry navigate, check URL |
 | Page crashed / context destroyed | NON_RECOVERABLE | Close session, relaunch |
-| Anti-bot detection (403/captcha) | ESCALATABLE | Escalate tier or rotate proxy |
+| Anti-bot detection (403/captcha) | ESCALATABLE | Escalate per the block assessment — see Escalation |
 | Rate limited (429) | RECOVERABLE | Wait, then retry with reduced frequency |
-| CAPTCHA detected | ESCALATABLE | Escalate tier or wait and retry |
+| CAPTCHA detected | ESCALATABLE | Solve in place (keys set) or escalate — see Escalation |
 | Session not found / expired | NON_RECOVERABLE | Launch new session |
 | Auth error (401/403 on server) | NON_RECOVERABLE | Check BROWSER_USE_TOKEN |
 | Response truncated | RECOVERABLE | Use more targeted snapshot (compact=true, reduce max_depth) |
@@ -354,8 +385,11 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | Tier | Engine | Tracker Blocking | Humanize | When |
 |------|--------|-----------------|----------|------|
 | 1 | Playwright (Chromium) | No | Opt-in | General browsing, friendly sites |
-| 2 | CloakBrowser (C++ patched Chromium) / Patchright fallback | Yes | Auto | reCAPTCHA v3 (0.9 score), FingerprintJS, BrowserScan — binary-level stealth |
-| 3 | Camoufox (Firefox C++ fork) | Yes | Auto | Turnstile, DataDome — with GeoIP + residential proxy |
+| 2 | CloakBrowser (C++ patched Chromium) / Patchright fallback | Yes | Opt-in¹ | reCAPTCHA v3 (0.9 score), FingerprintJS, BrowserScan — binary-level stealth |
+| 3 | Camoufox (Firefox C++ fork) | Yes | Native² | Turnstile, DataDome — with GeoIP + residential proxy |
+
+¹ Action-level humanization (bezier mouse / Gaussian typing) is opt-in via `BROWSER_USE_HUMANIZE=1` on all tiers — it is **not** auto-enabled for Tier 2 (auto-enabling caused action timeouts).
+² Camoufox applies its own humanization at the browser level (always on); the skill's action-level humanization is still opt-in via `BROWSER_USE_HUMANIZE`.
 
 ## Architecture
 
@@ -384,7 +418,7 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 |-------------|---------|-------------|
 | `BROWSER_USE_TOKEN` | (empty) | Bearer auth token for server. Omit to disable auth. |
 | `BROWSER_USE_EVALUATE` | `1` | Set to `0` to disable `evaluate` (arbitrary JS) action |
-| `BROWSER_USE_HUMANIZE` | `0` | Set to `1` to force humanized actions on all tiers (Tier 2+ auto-enables) |
+| `BROWSER_USE_HUMANIZE` | `0` | Set to `1` to enable action-level humanization (bezier mouse / Gaussian typing) on all tiers. NOT auto-enabled for Tier 2 (caused action timeouts); Tier 3 Camoufox humanizes natively regardless |
 | `BROWSER_USE_GEO` | (empty) | Geo profile for timezone/locale (e.g., `us`, `uk`, `de`, `jp`). See geo profiles below. |
 | `PROXY_SERVER` | (empty) | Proxy URL (e.g., `http://proxy:8080`). Used by all tiers (`static` strategy). |
 | `PROXY_USERNAME` | (empty) | Proxy auth username (also the base username for `backconnect`) |
@@ -399,8 +433,8 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | `CAMOUFOX_HEADLESS` | (empty) | Tier 3 headless override: `virtual` (headful inside a Camoufox-managed Xvfb — less detectable; **fails loud** if Xvfb missing, never silently headless), `true`/`1`, `false`/`0`; empty uses `HEADLESS` |
 | `CLOAKBROWSER_AUTO_UPDATE` | `false` | Allow CloakBrowser binary auto-updates (`true`/`false`) |
 | `CLOAKBROWSER_GEOIP` | `auto` | GeoIP from proxy: `auto` (use if cloakbrowser[geoip] installed), `0` (disable) |
-| `CAPSOLVER_API_KEY` | (empty) | CapSolver API key for CAPTCHA solving (primary, fast AI) |
-| `TWOCAPTCHA_API_KEY` | (empty) | 2Captcha API key for CAPTCHA solving (fallback, human) |
+| `CAPSOLVER_API_KEY` | (empty) | CapSolver key (primary, fast AI). When set, captcha/cloudflare blocks auto-solve inline (paid, under session lock) |
+| `TWOCAPTCHA_API_KEY` | (empty) | 2Captcha key (fallback, human-backed) |
 
 ### Proxy WebRTC-IP spoofing (Tier 2)
 

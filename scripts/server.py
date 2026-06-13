@@ -95,12 +95,32 @@ async def handle_request_inner(request_data: dict) -> dict:
 
     if op == "launch":
         import browser_engine
-        return await browser_engine.launch(
+        result = await browser_engine.launch(
             tier=request_data.get("tier", 1),
             profile=request_data.get("profile"),
             viewport=request_data.get("viewport"),
             url=request_data.get("url"),
         )
+        # Block-assess the initial navigation (parity with the post-action path).
+        # Surfaces the same advisory fields. Does NOT auto-solve here — keep launch
+        # light; the agent decides what to do with the assessment.
+        if request_data.get("url") and result.get("success"):
+            try:
+                from detection import assess_block
+                sid = result.get("session_id")
+                active_page = await browser_engine.get_page(sid) if sid else None
+                if active_page:
+                    assessment = await assess_block(active_page)
+                    if assessment:
+                        result["blocked"] = True
+                        result["protection"] = assessment["protection"]
+                        result["recommended_tier"] = assessment["recommended_tier"]
+                        result["needs_proxy"] = assessment["needs_proxy"]
+                        result["needs_sticky"] = assessment["needs_sticky"]
+                        result["escalation_reason"] = assessment["escalation_reason"]
+            except Exception:
+                pass
+        return result
 
     elif op in ("action", "actions"):
         import browser_engine
@@ -227,13 +247,18 @@ async def handle_request_inner(request_data: dict) -> dict:
             # Lightweight block detection after page-changing actions
             if result.get("page_changed"):
                 try:
-                    from detection import is_blocked
+                    from detection import assess_block
                     active_page = await browser_engine.get_page(session_id)
                     if active_page:
-                        protection = await is_blocked(active_page)
-                        if protection:
+                        assessment = await assess_block(active_page)
+                        if assessment:
+                            protection = assessment["protection"]
                             result["blocked"] = True
                             result["protection"] = protection
+                            result["recommended_tier"] = assessment["recommended_tier"]
+                            result["needs_proxy"] = assessment["needs_proxy"]
+                            result["needs_sticky"] = assessment["needs_sticky"]
+                            result["escalation_reason"] = assessment["escalation_reason"]
 
                             # Auto-solve CAPTCHA if solver keys are configured
                             if protection in ("captcha", "cloudflare") and (

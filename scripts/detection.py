@@ -292,17 +292,94 @@ async def detect_protection(url: str, html: Optional[str] = None, headers: Optio
     return await ModeDetector().detect(url, html=html, headers=headers)
 
 
-async def is_blocked(page) -> Optional[str]:
-    """Quick check if current page shows a block/challenge page.
+# ---------------------------------------------------------------------------
+# Protection-type → escalation recommendation (pure: no network, no browser).
+# Mirrors ModeDetector.detect()'s protection→tier rules (the single source of
+# truth) so the live block path and the profile engine agree.
+# ---------------------------------------------------------------------------
 
-    Returns the protection type string if blocked, None if OK.
-    Lightweight — just checks page title and a small HTML sample.
+# IP-reputation / device-fingerprint anti-bots: need Tier 3 + residential proxy.
+_TIER3_PROTECTIONS = ("datadome", "perimeterx", "akamai", "cloudflare_uam")
+# Residential sticky-session helps these (stable exit IP across the challenge).
+_STICKY_PROTECTIONS = ("datadome", "perimeterx", "akamai")
+
+_ESCALATION_REASON: dict[str, str] = {
+    "datadome": "DataDome (IP-reputation + device fingerprint) — Tier 3 + residential proxy",
+    "perimeterx": "PerimeterX/HUMAN (IP-reputation + behavioral) — Tier 3 + residential proxy",
+    "akamai": "Akamai Bot Manager (IP-reputation + JA4T) — Tier 3 + residential proxy",
+    "cloudflare_uam": "Cloudflare interstitial/under-attack — Tier 3, headful or virtual display",
+    "cloudflare": "Cloudflare — Tier 2 binary-level stealth (+ proxy)",
+    "captcha": "CAPTCHA present — solve in place, or escalate to Tier 2",
+    "generic": "Generic block / 403 — escalate to Tier 2 and/or rotate proxy",
+}
+
+
+def recommendation_for_protection(protection: Optional[str], url: Optional[str] = None) -> dict:
+    """Map a detected protection type to an escalation recommendation.
+
+    Pure and synchronous: no network, no browser. Mirrors ModeDetector.detect()'s
+    protection→tier rules so the live block path agrees with the profile engine.
+    When ``url`` is given, a matching known-site profile can RAISE the
+    recommendation (never lower it).
+
+    Returns: {recommended_tier, needs_proxy, needs_sticky, escalation_reason}.
+    """
+    if not protection:
+        return {"recommended_tier": 1, "needs_proxy": False,
+                "needs_sticky": False, "escalation_reason": ""}
+
+    if protection in _TIER3_PROTECTIONS:
+        tier, needs_proxy = 3, True
+    elif protection == "cloudflare":
+        tier, needs_proxy = 2, True
+    else:  # captcha, generic, or unknown
+        tier, needs_proxy = 2, False
+    needs_sticky = protection in _STICKY_PROTECTIONS
+
+    # Domain-aware raise (never lower) from known site profiles.
+    if url:
+        domain = urlparse(url).netloc.lower()
+        for pattern, cfg in SITE_PROFILES.items():
+            if pattern != "_default" and pattern in domain:
+                tier = max(tier, cfg.get("tier", tier))
+                needs_proxy = needs_proxy or cfg.get("proxy", False)
+                needs_sticky = needs_sticky or cfg.get("sticky", False)
+                break
+
+    return {
+        "recommended_tier": tier,
+        "needs_proxy": needs_proxy,
+        "needs_sticky": needs_sticky,
+        "escalation_reason": _ESCALATION_REASON.get(protection, f"{protection} detected"),
+    }
+
+
+async def _detect_block_protection(page) -> Optional[str]:
+    """Detect a block/challenge from the live page (title/url + small body sample).
+
+    Returns the protection type string if blocked, None if OK. Browser-page only —
+    no out-of-browser network probe.
     """
     try:
         title = (await page.title()).lower()
         url = page.url.lower()
 
-        # Cloudflare challenge
+        # Body sample (once) — used for the UAM and captcha checks below.
+        try:
+            content = (await page.evaluate(
+                "document.body ? document.body.innerText.substring(0, 500) : ''"
+            ) or "").lower()
+        except Exception:
+            content = ""
+
+        # Cloudflare under-attack / interstitial → Tier 3 (more severe than a plain
+        # challenge). Matched on UAM-SPECIFIC markers so a plain "Just a moment"
+        # challenge is NOT over-escalated. Checked before plain cloudflare.
+        if ("checking your browser" in title or "checking your browser" in content
+                or "under attack" in title or "this process is automatic" in content):
+            return "cloudflare_uam"
+
+        # Cloudflare challenge (plain) → Tier 2.
         if "just a moment" in title or "attention required" in title:
             return "cloudflare"
 
@@ -318,18 +395,44 @@ async def is_blocked(page) -> Optional[str]:
         if any(s in title for s in ("access denied", "403 forbidden", "blocked")):
             return "generic"
 
-        # Check for captcha in visible content (small sample)
-        content = await page.evaluate(
-            "document.body ? document.body.innerText.substring(0, 500) : ''"
-        )
-        content_lower = content.lower()
-        if "captcha" in content_lower or "verify you are human" in content_lower:
+        # CAPTCHA widget in visible content
+        if "captcha" in content or "verify you are human" in content:
             return "captcha"
 
     except Exception:
         pass
 
     return None
+
+
+async def is_blocked(page) -> Optional[str]:
+    """Quick block check — returns the protection type string, or None.
+
+    Compatibility wrapper preserved for existing callers. Prefer assess_block()
+    when you also want the escalation recommendation (recommended_tier / needs_proxy / ...).
+    """
+    return await _detect_block_protection(page)
+
+
+async def assess_block(page) -> Optional[dict]:
+    """Detect a block AND attach an escalation recommendation.
+
+    Returns None if the page is not blocked. Otherwise:
+      {protection, recommended_tier, needs_proxy, needs_sticky, escalation_reason}
+
+    Uses the live page (title/url/body) plus the pure protection→recommendation
+    map. Deliberately NO httpx probe: an out-of-browser request would not share
+    the session's cookies/proxy/fingerprint and could disagree with what the
+    browser actually sees.
+    """
+    protection = await _detect_block_protection(page)
+    if not protection:
+        return None
+    try:
+        url = page.url
+    except Exception:
+        url = None
+    return {"protection": protection, **recommendation_for_protection(protection, url=url)}
 
 
 # ---------------------------------------------------------------------------

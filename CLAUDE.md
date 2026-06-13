@@ -52,7 +52,8 @@ Element has no ARIA role?
 | Signal | Meaning | Action |
 |--------|---------|--------|
 | `page_changed: true` | Navigation occurred | Re-snapshot to get new refs |
-| `blocked: true` | Anti-bot detected | Escalate tier or try different approach |
+| `blocked: true` | Anti-bot detected (with `protection`) | Read the escalation assessment fields below — the server never auto-escalates |
+| `recommended_tier` / `needs_proxy` / `needs_sticky` / `escalation_reason` | Advisory escalation hint attached to a block | Relaunch at `recommended_tier` (new session); add a residential proxy if `needs_proxy`; use a sticky session if `needs_sticky` |
 | `loop_warning` | Repetitive action detected | Change approach (see warning level) |
 | `new_element_count` | Elements appeared since last snapshot | Check `*`-prefixed items in tree |
 | `changed_element_count` | Elements changed since last snapshot | Check `~`-prefixed items in tree |
