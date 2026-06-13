@@ -167,7 +167,8 @@ class Config:
     # Geo profile — timezone/locale correlation for stealth
     GEO = os.getenv("BROWSER_USE_GEO", "")
 
-    # WebMCP — structured tool discovery on Chrome 146+ pages
+    # WebMCP — structured tool discovery. Origin Trial document.modelContext (Chrome 149+);
+    # navigator.modelContextTesting fallback for pre-OT builds (146-148).
     # "auto" = detect at runtime, "1" = force Chrome channel + flag, "0" = disable
     WEBMCP_ENABLED = os.getenv("BROWSER_USE_WEBMCP", "auto")
     # Chrome channel for WebMCP ("chrome-dev", "chrome-beta", "chrome-canary", "chrome")

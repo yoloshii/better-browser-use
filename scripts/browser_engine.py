@@ -153,9 +153,12 @@ TRACKER_PATTERNS: list[str] = [
 
 
 # ---------------------------------------------------------------------------
-# WebMCP init script — intercepts tool registrations on Chrome 146+ pages
-# Chrome 147 removed provideContext()/clearContext() (spec PR #132, issue #101)
-# Chrome 148 removed unregisterTool(); use AbortSignal instead (spec PR #147)
+# WebMCP init script — fallback interceptor for the publisher registration API.
+# Origin Trial (Chrome 149-156) exposes document.modelContext; pre-OT builds (146-148)
+# used navigator.modelContext (deprecated in Chrome 150, not yet removed). This script
+# patches whichever namespace is present, as a fallback for pages where the native
+# discovery APIs (document.modelContext.getTools / navigator.modelContextTesting.listTools)
+# are unavailable. Primary discovery is the dual-path adapter in actions.py.
 # ---------------------------------------------------------------------------
 
 WEBMCP_INIT_SCRIPT = """
@@ -163,8 +166,10 @@ WEBMCP_INIT_SCRIPT = """
     // Initialize WebMCP interception layer
     window.__webmcp = { tools: {}, available: false, declarative: {}, _abortControllers: {} };
 
-    if (typeof navigator.modelContext === 'undefined') return;
-    if (typeof navigator.modelContext.registerTool !== 'function') return;
+    // Prefer the OT namespace (document.modelContext, Chrome 149+); fall back to the
+    // pre-OT navigator.modelContext (146-148, deprecated but present through ~150).
+    const mc = (window.document && document.modelContext) || navigator.modelContext;
+    if (!mc || typeof mc.registerTool !== 'function') return;
 
     window.__webmcp.available = true;
 
@@ -172,14 +177,15 @@ WEBMCP_INIT_SCRIPT = """
     // Chrome 148+: unregisterTool() removed, use AbortSignal instead
     // We track AbortControllers so we can unregister tools from our side
 
-    const origRegister = navigator.modelContext.registerTool.bind(navigator.modelContext);
-    navigator.modelContext.registerTool = function(tool, options) {
+    const origRegister = mc.registerTool.bind(mc);
+    mc.registerTool = function(tool, options) {
         window.__webmcp.tools[tool.name] = {
             name: tool.name,
             description: tool.description || '',
             inputSchema: tool.inputSchema || {},
             annotations: tool.annotations || {},
             readOnlyHint: !!(tool.annotations && tool.annotations.readOnlyHint),
+            untrustedContentHint: !!(tool.annotations && tool.annotations.untrustedContentHint),
             _hasExecute: typeof tool.execute === 'function',
             _ref: tool,  // keep live reference for execute()
         };
@@ -195,9 +201,9 @@ WEBMCP_INIT_SCRIPT = """
 
     // Chrome 147 and below: unregisterTool exists — proxy it
     // Chrome 148+: unregisterTool removed — skip gracefully
-    if (typeof navigator.modelContext.unregisterTool === 'function') {
-        const origUnregister = navigator.modelContext.unregisterTool.bind(navigator.modelContext);
-        navigator.modelContext.unregisterTool = function(name) {
+    if (typeof mc.unregisterTool === 'function') {
+        const origUnregister = mc.unregisterTool.bind(mc);
+        mc.unregisterTool = function(name) {
             delete window.__webmcp.tools[name];
             delete window.__webmcp._abortControllers[name];
             return origUnregister(name);
@@ -284,18 +290,30 @@ WEBMCP_INIT_SCRIPT = """
     // --- Expose execute helper ---
     // Spec: ToolExecuteCallback = (input, client) => Promise
     // client.requestUserInteraction(callback) enables human-in-the-loop
-    const mockClient = {
-        requestUserInteraction: async (cb) => {
-            // In agent context, auto-approve (no human in the loop)
-            return typeof cb === 'function' ? await cb() : undefined;
-        },
-    };
-
-    window.__webmcp.executeTool = async (name, args) => {
+    window.__webmcp.executeTool = async (name, args, opts) => {
+        opts = opts || {};
         // Try imperative first
         const imp = window.__webmcp.tools[name];
         if (imp && imp._ref && typeof imp._ref.execute === 'function') {
-            return await imp._ref.execute(args, mockClient);
+            // Human-in-the-loop gate (agent security guidance): only auto-approve a
+            // requestUserInteraction() for read-only tools, or when the caller explicitly
+            // opts in via allowSensitive. Assume tools mutate state unless readOnlyHint says otherwise.
+            const allowSensitive = !!imp.readOnlyHint || !!opts.allowSensitive;
+            const client = {
+                requestUserInteraction: async (cb) => {
+                    if (!allowSensitive) throw new Error('__webmcp_user_interaction_required__');
+                    return typeof cb === 'function' ? await cb() : undefined;
+                },
+            };
+            try {
+                return await imp._ref.execute(args, client);
+            } catch (e) {
+                if (String((e && e.message) || '').indexOf('__webmcp_user_interaction_required__') !== -1) {
+                    return { _requires_user_interaction: true, tool: name,
+                             message: 'Tool requested user confirmation for a state-changing action. Re-call webmcp_call with allow_sensitive=true to proceed.' };
+                }
+                throw e;
+            }
         }
         // Try declarative (form fill + submit)
         const decl = window.__webmcp.declarative[name];
@@ -331,13 +349,16 @@ WEBMCP_INIT_SCRIPT = """
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                 }
             }
-            // Submit
-            if (decl.autoSubmit || true) {  // always submit for agent calls
+            // Submit only when the form opted into auto-submit (toolautosubmit).
+            // Per the declarative spec, forms without it require explicit submission —
+            // previously this always submitted (`|| true`), stronger than documented behavior.
+            if (decl.autoSubmit) {
                 const submitBtn = form.querySelector('[type="submit"]') || form.querySelector('button:not([type])');
                 if (submitBtn) submitBtn.click();
                 else form.requestSubmit();
+                return { content: [{ type: 'text', text: 'Form submitted for tool: ' + name }] };
             }
-            return { content: [{ type: 'text', text: 'Form submitted for tool: ' + name }] };
+            return { content: [{ type: 'text', text: 'Form fields populated for tool: ' + name + ' (toolautosubmit not set; explicit submission required)' }] };
         }
         return { error: 'Tool not found: ' + name };
     };

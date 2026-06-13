@@ -431,7 +431,13 @@ async def take_snapshot(
         for name, tool in webmcp_tools.items():
             desc = (tool.get("description") or "")[:80]
             tool_type = tool.get("type", "imperative")
-            header += f"  [{tool_type}] {name}: {desc}\n"
+            flags = []
+            if tool.get("readOnlyHint"):
+                flags.append("read-only")
+            if tool.get("untrustedContentHint"):
+                flags.append("untrusted-output")
+            flag_str = f" [{', '.join(flags)}]" if flags else ""
+            header += f"  [{tool_type}] {name}: {desc}{flag_str}\n"
 
     header += "\n"
 

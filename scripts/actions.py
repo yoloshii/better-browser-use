@@ -1050,66 +1050,121 @@ async def action_tab_close(page, params: dict, session: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# WebMCP actions (Chrome 147+ structured tool interaction)
+# WebMCP actions — Origin Trial document.modelContext (Chrome 149+) structured tool
+# interaction, with navigator.modelContextTesting (146-148) + interceptor fallbacks.
 # ---------------------------------------------------------------------------
+
+# Discovery JS (module-level so tests can exercise the exact shipped string).
+# Dual-path, newest-first: document.modelContext.getTools() (async, Chrome 149+ OT)
+# -> navigator.modelContextTesting.listTools() (sync, 146-148) -> init-script interceptor.
+_WEBMCP_DISCOVER_JS = """
+async () => {
+    // Uniform descriptor shape across API generations.
+    const shape = (t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: typeof t.inputSchema === 'string'
+            ? JSON.parse(t.inputSchema) : (t.inputSchema || {}),
+        readOnlyHint: !!(t.annotations && t.annotations.readOnlyHint),
+        untrustedContentHint: !!(t.annotations && t.annotations.untrustedContentHint),
+        origin: t.origin || null,
+    });
+
+    // 1. Origin Trial API (Chrome 149+): document.modelContext.getTools() is async.
+    if (window.document && document.modelContext
+            && typeof document.modelContext.getTools === 'function') {
+        try {
+            const tools = await document.modelContext.getTools();
+            return { available: true, source: 'document', tools: tools.map(shape) };
+        } catch (e) { /* fall through to legacy paths */ }
+    }
+
+    // 2. Pre-OT testing API (Chrome 146-148): navigator.modelContextTesting.listTools() is sync.
+    if (navigator.modelContextTesting
+            && typeof navigator.modelContextTesting.listTools === 'function') {
+        const tools = navigator.modelContextTesting.listTools();
+        return { available: true, source: 'native', tools: tools.map(shape) };
+    }
+
+    // 3. Fallback: init-script interceptor + declarative form scan.
+    if (window.__webmcp) {
+        if (typeof window.__webmcp.rescanDeclarative === 'function') {
+            window.__webmcp.rescanDeclarative();
+        }
+        const allTools = [];
+        for (const [, t] of Object.entries(window.__webmcp.tools || {})) {
+            allTools.push({
+                name: t.name, description: t.description, inputSchema: t.inputSchema,
+                readOnlyHint: t.readOnlyHint || false,
+                untrustedContentHint: t.untrustedContentHint || false,
+                origin: t.origin || null, type: 'imperative',
+            });
+        }
+        for (const [, t] of Object.entries(window.__webmcp.declarative || {})) {
+            allTools.push({
+                name: t.name, description: t.description, inputSchema: t.inputSchema,
+                readOnlyHint: false, untrustedContentHint: false,
+                origin: null, type: 'declarative',
+            });
+        }
+        return { available: window.__webmcp.available, source: 'interceptor', tools: allTools };
+    }
+
+    return { available: false, source: 'none', tools: [] };
+}
+"""
+
+# Execution JS (module-level; exercised by tests). Dual-path, newest-first.
+# document.modelContext.executeTool() takes the TOOL OBJECT (from getTools()), which
+# can't cross the page.evaluate() boundary — so it is re-resolved by name in-page.
+_WEBMCP_CALL_JS = """
+async ([name, argsJson, knownOrigin, allowSensitive]) => {
+    // 1. Origin Trial API (Chrome 149+): resolve the tool object in-page, then execute it.
+    if (window.document && document.modelContext
+            && typeof document.modelContext.executeTool === 'function'
+            && typeof document.modelContext.getTools === 'function') {
+        const tools = await document.modelContext.getTools();
+        // Fail closed on origin: if a known origin was recorded at discovery, require an
+        // exact name+origin match — never fall back to a same-named tool from another origin.
+        const tool = knownOrigin
+            ? tools.find(t => t.name === name && t.origin === knownOrigin)
+            : tools.find(t => t.name === name);
+        if (!tool) return { error: knownOrigin
+            ? 'Tool "' + name + '" not found for origin ' + knownOrigin + ' — tool set changed; re-run webmcp_discover'
+            : 'Tool not found in document.modelContext: ' + name };
+        const r = await document.modelContext.executeTool(tool, argsJson);
+        if (r === null) return { _navigated: true };
+        if (typeof r === 'string') { try { return JSON.parse(r); } catch { return { text: r }; } }
+        return r;
+    }
+
+    // 2. Pre-OT testing API (Chrome 146-148): executeTool(name, jsonString).
+    if (navigator.modelContextTesting
+            && typeof navigator.modelContextTesting.executeTool === 'function') {
+        const r = await navigator.modelContextTesting.executeTool(name, argsJson);
+        if (r === null) return { _navigated: true };
+        try { return JSON.parse(r); } catch { return { text: r }; }
+    }
+
+    // 3. Fallback: init-script interceptor (executeTool takes an object + opts).
+    if (window.__webmcp && typeof window.__webmcp.executeTool === 'function') {
+        return await window.__webmcp.executeTool(name, JSON.parse(argsJson), { allowSensitive: !!allowSensitive });
+    }
+    return { error: 'No WebMCP execution path available' };
+}
+"""
+
 
 async def action_webmcp_discover(page, params: dict, session: dict) -> dict:
     """Discover WebMCP tools on the current page.
 
-    Prefers the native Chrome testing API (navigator.modelContextTesting.listTools)
-    which returns both imperative and declarative tools. Falls back to the init
-    script interceptor if the testing API isn't available.
-    """
-    js = """
-    () => {
-        // Prefer native Chrome testing API (available with --enable-features=WebMCPTesting)
-        if (navigator.modelContextTesting && typeof navigator.modelContextTesting.listTools === 'function') {
-            const tools = navigator.modelContextTesting.listTools();
-            return {
-                available: true,
-                source: 'native',
-                tools: tools.map(t => ({
-                    name: t.name,
-                    description: t.description,
-                    inputSchema: typeof t.inputSchema === 'string'
-                        ? JSON.parse(t.inputSchema) : (t.inputSchema || {}),
-                    readOnlyHint: !!(t.annotations && t.annotations.readOnlyHint),
-                })),
-            };
-        }
-
-        // Fallback: init script interceptor + declarative form scan
-        if (window.__webmcp) {
-            if (typeof window.__webmcp.rescanDeclarative === 'function') {
-                window.__webmcp.rescanDeclarative();
-            }
-            const allTools = [];
-            for (const [name, t] of Object.entries(window.__webmcp.tools || {})) {
-                allTools.push({
-                    name: t.name,
-                    description: t.description,
-                    inputSchema: t.inputSchema,
-                    readOnlyHint: t.readOnlyHint || false,
-                    type: 'imperative',
-                });
-            }
-            for (const [name, t] of Object.entries(window.__webmcp.declarative || {})) {
-                allTools.push({
-                    name: t.name,
-                    description: t.description,
-                    inputSchema: t.inputSchema,
-                    readOnlyHint: false,
-                    type: 'declarative',
-                });
-            }
-            return { available: window.__webmcp.available, source: 'interceptor', tools: allTools };
-        }
-
-        return { available: false, source: 'none', tools: [] };
-    }
+    Dual-path, newest-first: document.modelContext.getTools() (Chrome 149+ Origin Trial,
+    async) -> navigator.modelContextTesting.listTools() (Chrome 146-148, sync) -> the
+    init-script interceptor + declarative form scan. Captures readOnlyHint,
+    untrustedContentHint, and origin per the agent-security guidance.
     """
     try:
-        result = await page.evaluate(js)
+        result = await page.evaluate(_WEBMCP_DISCOVER_JS)
         available = result.get("available", False)
         source = result.get("source", "none")
 
@@ -1146,11 +1201,17 @@ async def action_webmcp_discover(page, params: dict, session: dict) -> dict:
 async def action_webmcp_call(page, params: dict, session: dict) -> dict:
     """Call a WebMCP tool by name with structured arguments.
 
-    Prefers native Chrome testing API (executeTool takes JSON string).
-    Falls back to init script interceptor (executeTool takes object).
+    Dual-path, newest-first: document.modelContext.executeTool(toolObject, jsonString)
+    (Chrome 149+ OT; the tool object is re-resolved in-page since it can't cross the
+    evaluate boundary) -> navigator.modelContextTesting.executeTool(name, jsonString)
+    (146-148) -> init-script interceptor. For mutating tools on the interceptor path,
+    requestUserInteraction is gated unless params['allow_sensitive'] is true.
     """
     tool_name = params.get("tool")
     args = params.get("args", {})
+    # Strict: only an explicit JSON boolean true approves sensitive execution
+    # (bool("false") is True in Python — truthy-coercion would bypass the gate).
+    allow_sensitive = params.get("allow_sensitive") is True
     if not tool_name:
         return {"success": False, "error": "Missing required param: tool"}
 
@@ -1160,33 +1221,17 @@ async def action_webmcp_call(page, params: dict, session: dict) -> dict:
         available = list(known.keys()) if known else []
         hint = f"Available: {', '.join(available)}" if available else "Run webmcp_discover first"
         return {"success": False, "error": f"Tool '{tool_name}' not found. {hint}"}
+    known_origin = (known.get(tool_name) or {}).get("origin")
 
     old_url = page.url
     try:
-        # Use native testing API when available (executeTool takes JSON string arg)
-        # Falls back to interceptor's executeTool (takes object arg)
         # Wrap in asyncio.wait_for because executeTool can trigger cross-document
         # navigation which destroys the JS context — page.evaluate() would hang.
         try:
             result = await asyncio.wait_for(
                 page.evaluate(
-                    """async ([name, argsJson]) => {
-                        // Prefer native Chrome testing API
-                        if (navigator.modelContextTesting &&
-                            typeof navigator.modelContextTesting.executeTool === 'function') {
-                            const r = await navigator.modelContextTesting.executeTool(name, argsJson);
-                            // null = navigation was triggered (cross-document)
-                            if (r === null) return { _navigated: true };
-                            // result is a JSON string
-                            try { return JSON.parse(r); } catch { return { text: r }; }
-                        }
-                        // Fallback: init script interceptor
-                        if (window.__webmcp && typeof window.__webmcp.executeTool === 'function') {
-                            return await window.__webmcp.executeTool(name, JSON.parse(argsJson));
-                        }
-                        return { error: 'No WebMCP execution path available' };
-                    }""",
-                    [tool_name, json.dumps(args)],
+                    _WEBMCP_CALL_JS,
+                    [tool_name, json.dumps(args), known_origin, allow_sensitive],
                 ),
                 timeout=15.0,
             )
@@ -1215,7 +1260,12 @@ async def action_webmcp_call(page, params: dict, session: dict) -> dict:
         }
 
         if result and isinstance(result, dict):
-            if result.get("_navigated"):
+            if result.get("_requires_user_interaction"):
+                out["success"] = False
+                out["error"] = result.get("message", "Tool requires user confirmation for a state-changing action.")
+                out["requires_user_interaction"] = True
+                out["tool"] = tool_name
+            elif result.get("_navigated"):
                 out["extracted_content"] = "Tool triggered navigation"
                 out["page_changed"] = True
             elif result.get("error"):

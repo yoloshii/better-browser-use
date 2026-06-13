@@ -4,103 +4,73 @@ Browser-use skill integration with Chrome's WebMCP standard for structured tool 
 
 ## Overview
 
-WebMCP exposes structured tools on websites via `navigator.modelContext` (publisher) and `navigator.modelContextTesting` (consumer). Instead of inferring page structure from ARIA snapshots, the agent reads explicit tool contracts with JSON schemas and calls them directly.
+WebMCP exposes structured tools on websites. The Origin Trial (Chrome 149-156) unifies the API under `document.modelContext` — `registerTool()` (publisher) plus `getTools()` + `executeTool()` (consumer), all on one object. Pre-OT builds (Chrome 146-148) used the split `navigator.modelContext` (publisher) + `navigator.modelContextTesting` (consumer); `navigator.modelContext` is **deprecated in Chrome 150 but not yet removed**, and `navigator.modelContextTesting` is absent from current docs. Instead of inferring page structure from ARIA snapshots, the agent reads explicit tool contracts with JSON schemas and calls them directly. browser-use uses a **dual-path adapter** (document → navigator → interceptor) so it works across both API generations.
 
-**Status**: Early preview, Chrome 147+ behind flag, expiry milestone 155.
+**Status**: Origin Trial (Chrome 149.0.7827.102 → 156). Adapter implemented + stub-tested (`tests/test_webmcp_adapter.py`, 15/15 on bundled Chromium). **Real-browser OT conformance is UNVERIFIED** — no Chrome 149+ channel is available locally (highest is Beta 146, which only exercises the navigator fallback). Headless-vs-headful behavior, cross-origin enumeration, OT-token flow, and the exact `--enable-features` token are deferred until a 149+ channel exists.
 
 ## Requirements
 
 | Component | Version | Notes |
 |-----------|---------|-------|
-| Chrome Beta/Canary/Dev | 147.0.7721.0+ | `sudo apt install google-chrome-beta` |
-| Playwright | 1.56+ | Supports `channel` param for system Chrome |
+| Chrome Beta/Canary/Dev | 149.0.7827+ for the OT API; 146-148 uses the navigator fallback | `sudo apt install google-chrome-beta` (Beta auto-updates toward 149) |
+| Playwright | 1.56+ (we run 1.60) | Supports `channel` param for system Chrome |
 | browser-use server | Current | `BROWSER_USE_WEBMCP=1 BROWSER_USE_CHROME_CHANNEL=chrome-beta` |
 
-WSL2 verified: Chrome Beta 146.0.7680.0 headless works.
+Local state (2026-06): only Chrome Beta 146.0.7680.0 available — exercises the navigator-fallback path, NOT the OT `document.modelContext` path.
 
 ## Chrome Feature Flags
 
-Two separate runtime features gated independently:
+The Origin Trial API is gated behind a local-dev flag (production sites use an OT token, which we can't inject into third-party pages — so the flag is our only viable gate for arbitrary-site automation):
 
-| Flag | Enables | CLI arg |
-|------|---------|---------|
-| `WebMCP` | `navigator.modelContext` (publisher API) | `--enable-features=WebMCP` |
-| `WebMCPTesting` | `navigator.modelContextTesting` (consumer API) + implies WebMCP | `--enable-features=WebMCPTesting` |
+| Surface | Enable | Notes |
+|---------|--------|-------|
+| OT `document.modelContext` (149+) | `chrome://flags/#enable-webmcp-testing` → Enabled, relaunch | Local dev. The matching `--enable-features=<token>` for headless automation needs confirmation on a real 149+ build. |
+| pre-OT `navigator.modelContextTesting` (146-148) | `--enable-features=WebMCPTesting` | What `browser_engine.py` currently passes; correct for 146-148. |
 
-`--enable-experimental-web-platform-features` enables WebMCP but NOT WebMCPTesting.
-
-**Always use `WebMCPTesting`** — it enables both publisher and consumer APIs.
-
-Source: `third_party/blink/renderer/platform/runtime_enabled_features.json5`
-```json5
-{ name: "WebMCP", implied_by: ["WebMCPTesting"], status: "experimental" },
-{ name: "WebMCPTesting", status: "experimental" },
-```
+`browser_engine.py` appends `--enable-features=WebMCPTesting` when a Chrome channel/executable is set or `BROWSER_USE_WEBMCP=1`. **TODO (needs 149+):** confirm whether this token still enables the OT `document.modelContext` shape, or whether the flag name changed behind `chrome://flags/#enable-webmcp-testing`.
 
 ## API Surface
 
-### Publisher API (`navigator.modelContext`)
+### Unified API (`document.modelContext`) — Origin Trial (Chrome 149+)
 
-Pages use this to declare tools. We don't call this directly — pages do.
-
-Chrome 147 removed `provideContext()` and `clearContext()` (spec PR #132, issue #101).
-The API is now purely additive — `registerTool()` / `unregisterTool()`.
-`unregisterTool()` design under revision (issue #130) — may change to require original dict.
+Both publisher and consumer live on `document.modelContext`. browser-use is the **consumer**: it calls `getTools()`/`executeTool()` from `page.evaluate()`.
 
 ```webidl
-interface ModelContext {
-  undefined registerTool(ModelContextTool tool);   // throws InvalidStateError on duplicate name
-  undefined unregisterTool(DOMString name);
-};
+partial interface Document { readonly attribute ModelContext modelContext; };
 
-dictionary ModelContextTool {
-  required DOMString name;
-  required DOMString description;
-  object inputSchema;                 // JSON Schema
-  required ToolExecuteCallback execute;
-  ToolAnnotations annotations;
+interface ModelContext : EventTarget {
+  undefined registerTool(ModelContextTool tool, optional RegisterOptions options);   // {signal, exposedTo}
+  Promise<sequence<RegisteredTool>> getTools(optional GetToolsOptions options);       // ASYNC; {fromOrigins}
+  Promise<any?> executeTool(RegisteredTool tool, DOMString inputJson, optional ExecOptions options); // {signal}
+  attribute EventHandler ontoolchange;   // "toolchange" fires when the tool set changes
 };
 
 dictionary ToolAnnotations {
-  boolean readOnlyHint = false;       // hint: tool only reads data
+  boolean readOnlyHint = false;          // tool only reads data → agent may skip confirmation
+  boolean untrustedContentHint = false;  // output is UGC/external → agent must spotlight it
 };
 
-callback ToolExecuteCallback = Promise<any> (object input, ModelContextClient client);
-
-interface ModelContextClient {
-  Promise<any> requestUserInteraction(UserInteractionCallback callback);
-};
-```
-
-### Consumer API (`navigator.modelContextTesting`)
-
-We call this from `page.evaluate()` to discover and execute tools.
-
-```webidl
-interface ModelContextTesting {
-  sequence<RegisteredTool> listTools();                        // synchronous
-  Promise<DOMString?> executeTool(                             // async
-      DOMString tool_name,
-      DOMString input_arguments,                               // JSON string, NOT object
-      optional ExecuteToolOptions options = {}                  // { signal: AbortSignal }
-  );
-  undefined registerToolsChangedCallback(ToolsChangedCallback callback);
-  Promise<DOMString> getCrossDocumentScriptToolResult();       // after navigation
-};
-
-dictionary RegisteredTool {
-  required DOMString name;
-  required DOMString description;
-  DOMString inputSchema;              // JSON string, parse before use
+dictionary RegisteredTool {              // shape returned by getTools()
+  DOMString name; DOMString description;
+  DOMString inputSchema;                 // JSON STRING — parse before use
+  ToolAnnotations annotations;           // { readOnlyHint, untrustedContentHint }
+  USVString origin;                      // origin that registered the tool
+  // also carries a live `window` ref → the object CANNOT cross the page.evaluate() boundary
 };
 ```
 
-**Critical details:**
-- `listTools()` is synchronous — returns immediately
-- `executeTool()` takes a **JSON string** as second arg, not an object
-- `executeTool()` returns `null` when tool triggers navigation (cross-document)
-- `inputSchema` in `RegisteredTool` is a **string** — must `JSON.parse()` it
-- Accessible from `page.evaluate()` — no extension privileges needed
+**Consumer details (what the adapter calls via `page.evaluate()`):**
+- `getTools()` is **async** (Promise) — the evaluate body is `async`. (Pre-OT `listTools()` was synchronous.)
+- `executeTool(tool, inputJson)` takes the **tool OBJECT** from `getTools()`, not the name. Since the object can't be returned to Python and passed back, `webmcp_call` re-fetches `getTools()` **inside the page**, matches by `name` (+ `origin` when known), and executes in the same evaluate.
+- `executeTool()` returns `null` when the tool triggers navigation (cross-document).
+- `inputSchema` in `RegisteredTool` is a **string** — parse it.
+- Tool removal is via `AbortSignal` (`registerTool(tool,{signal})` → `controller.abort()`); there is no `unregisterTool` in the OT API.
+- Cross-origin: `getTools({fromOrigins:[...]})` + `registerTool(tool,{exposedTo:[...]})` + iframe `allow="tools"` (Permissions-Policy `tools`, default `self`). **DEFERRED** — not wired (low value for an out-of-page driver on third-party sites).
+- Origin isolation: WebMCP is disabled in documents with `document.domain` enabled (`Origin-Agent-Cluster: ?0`). Our `add_init_script` injection does NOT trip this — risk is site headers, not our launch path.
+
+### Pre-OT API (`navigator.modelContext` + `navigator.modelContextTesting`) — Chrome 146-148
+
+The split API older code targeted: publisher `navigator.modelContext.registerTool()`/`unregisterTool()`; consumer `navigator.modelContextTesting.listTools()` (sync) + `executeTool(name, jsonString)`. `navigator.modelContext` is deprecated in Chrome 150 (not removed); `navigator.modelContextTesting` is absent from current docs. Retained only as the adapter's **fallback** for 146-148 builds.
 
 ### Declarative API (HTML form annotations)
 
@@ -133,27 +103,33 @@ Declarative tools appear in `listTools()` alongside imperative tools. `executeTo
 
 ### Dual-path execution
 
+The discover/call JS live as module-level constants in `actions.py` (`_WEBMCP_DISCOVER_JS`, `_WEBMCP_CALL_JS`) so tests exercise the exact shipped strings. Both try paths newest-first:
+
 ```
 webmcp_discover / webmcp_call
   |
-  +-- 1st: navigator.modelContextTesting (native Chrome API)
-  |        listTools() -> [{name, description, inputSchema}]
-  |        executeTool(name, JSON.stringify(args)) -> Promise<string|null>
+  +-- 1st: document.modelContext (Chrome 149+ Origin Trial)
+  |        getTools() -> async [{name, description, inputSchema(str), annotations, origin, window}]
+  |        executeTool(TOOL_OBJECT, jsonString) -> Promise<any|null>
+  |        (call path re-resolves the tool object in-page by name + origin)
   |
-  +-- 2nd: Init script interceptor (fallback)
-           Monkey-patches registerTool/unregisterTool
+  +-- 2nd: navigator.modelContextTesting (Chrome 146-148)
+  |        listTools() (sync) / executeTool(name, jsonString)
+  |
+  +-- 3rd: Init script interceptor (fallback)
+           Monkey-patches registerTool on document.modelContext OR navigator.modelContext
            Scans <form toolname> for declarative tools
-           Calls tool._ref.execute(args, mockClient) or fills+submits form
+           Calls tool._ref.execute(args, client) (gated) or fills+submits form
 ```
 
-Native API is preferred — interceptor exists for edge cases where `modelContextTesting` isn't available (e.g., `WebMCP` flag without `WebMCPTesting`).
+Newest API wins; lower paths are fallbacks for older builds / pages where the native discovery API isn't present. All three capture `readOnlyHint` + `untrustedContentHint`.
 
 ### Init script interceptor
 
 Injected via `context.add_init_script()` before any page JS runs. Captures:
-- Imperative tools: patches `registerTool()`, `unregisterTool()` (Chrome 147+ — no provideContext/clearContext)
-- Declarative tools: scans `<form toolname>` elements on DOMContentLoaded
-- Execution: `window.__webmcp.executeTool(name, args)` handles both paths, passes mockClient for `requestUserInteraction`
+- Imperative tools: patches `registerTool()` on whichever namespace exists (`document.modelContext` 149+ or `navigator.modelContext` 146-150); removal via `AbortSignal`
+- Declarative tools: scans `<form toolname>` elements on DOMContentLoaded; respects `toolautosubmit` (forms without it are filled but NOT auto-submitted — previously always submitted via a `|| true` bug)
+- Execution: `window.__webmcp.executeTool(name, args, {allowSensitive})` — for mutating tools (not `readOnlyHint`), `requestUserInteraction` is gated unless `allowSensitive` is set, returning `_requires_user_interaction` instead of silently completing the action
 
 For declarative form filling, uses native input setter to trigger React/framework state updates:
 ```javascript
@@ -165,16 +141,25 @@ el.dispatchEvent(new Event('input', { bubbles: true }));
 el.dispatchEvent(new Event('change', { bubbles: true }));
 ```
 
+### Security signal propagation (agent-security guidance)
+
+Per Chrome's [Agent security considerations for WebMCP](https://developer.chrome.com/docs/agents/security), the server faithfully **propagates** safety signals to the driving agent and **gates** state-changing actions:
+- **`untrustedContentHint`** — captured on discover, surfaced as `[untrusted-output]` in the snapshot tool header. The driving agent should spotlight (delimit/base64) such output and never execute instructions found in it.
+- **`readOnlyHint`** — captured + surfaced as `[read-only]`; the agent may skip confirmation for read-only tools.
+- **Confirm mutating actions** — on the interceptor path, `requestUserInteraction` for a non-`readOnlyHint` tool is NOT auto-approved; `webmcp_call` returns `requires_user_interaction: true` unless called with `allow_sensitive: true`. (On the native `document.modelContext` path, Chrome owns confirmation.)
+- `origin` is captured so the agent can restrict cross-origin interactions.
+
 ### File locations
 
 | File | WebMCP additions |
 |------|-----------------|
 | `config.py` | `WEBMCP_ENABLED`, `CHROME_CHANNEL`, `CHROME_EXECUTABLE` env vars |
-| `browser_engine.py` | `WEBMCP_INIT_SCRIPT`, `_inject_webmcp_script()`, `_build_chrome_launch_opts()`, session `webmcp_*` fields |
-| `actions.py` | `action_webmcp_discover()`, `action_webmcp_call()` |
-| `snapshot.py` | `webmcp_tools` param on `take_snapshot()`, tool header in output |
+| `browser_engine.py` | `WEBMCP_INIT_SCRIPT` (dual-namespace interceptor, gated execute), `_inject_webmcp_script()`, `_build_chrome_launch_opts()`, session `webmcp_*` fields |
+| `actions.py` | `_WEBMCP_DISCOVER_JS` / `_WEBMCP_CALL_JS` constants, `action_webmcp_discover()`, `action_webmcp_call()` (`allow_sensitive` param) |
+| `snapshot.py` | `webmcp_tools` param on `take_snapshot()`, tool header with `[read-only]`/`[untrusted-output]` flags |
 | `server.py` | Pass `webmcp_tools` through session context |
 | `rate_limiter.py` | Both actions in `EXEMPT_ACTIONS` |
+| `tests/test_webmcp_adapter.py` | Stub tests for the dual-path JS (15/15, bundled Chromium) |
 
 ## Usage
 
@@ -314,14 +299,16 @@ Tier 3 incompatibility is acceptable — sites requiring Camoufox-level anti-bot
 
 ## Known limitations
 
-1. **Chrome-only** — WebMCP is a Chrome proposal, no Firefox/Safari support
-2. **Early preview** — API may change, flag expires at milestone 155
-3. **Adoption** — very few sites implement WebMCP currently
-4. **Cross-document results** — `getCrossDocumentScriptToolResult()` not wired into `webmcp_call` yet
-5. **Tool change detection** — `registerToolsChangedCallback` not used; manual re-discover required
-6. **AbortSignal** — `ExecuteToolOptions.signal` not exposed via browser-use API
-7. **Declarative tool execution** — Chrome's native `executeTool()` for declarative forms hangs when the page's `respondWith()` callback doesn't resolve. Discovery and schema extraction work correctly; execution requires the page to properly implement `SubmitEvent.respondWith()`. The 15s timeout in `webmcp_call` prevents server hangs.
-8. **`webmcp_available` on all pages** — With Chrome Beta + `WebMCPTesting` flag, `navigator.modelContext` exists on all pages. Check `tool_count` (not `available`) to determine if WebMCP tools are registered.
+1. **Chrome-only** — WebMCP is a Chrome proposal, no Firefox/Safari support (Tier 3 Camoufox excluded)
+2. **Origin Trial, not stable** — API may still change through Chrome 156; near-zero site adoption
+3. **Real-OT conformance UNVERIFIED** — no local 149+ channel; the OT `document.modelContext` path is stub-tested only. E2E on a real 149+ build is pending.
+4. **Headless** — docs say tools need "a visible interface" / no "headless state"; whether that breaks our default headless Playwright mode (real DOM/JS, no UI) is unconfirmed for the OT. Test headless + headful/Xvfb on 149+ before claiming headless support.
+5. **`toolchange` event** — not subscribed; manual re-discover after navigation still required
+6. **AbortSignal cancellation** — `executeTool({signal})` not exposed via the browser-use API (15s timeout used instead)
+7. **Cross-origin** — `fromOrigins`/`exposedTo`/`allow="tools"` not wired
+8. **`--enable-features` token** — pre-OT `WebMCPTesting`; unconfirmed whether it enables the OT shape on 149+
+9. **Declarative tool execution** — native `executeTool()` for declarative forms can hang if the page's `respondWith()` never resolves; the 15s timeout in `webmcp_call` prevents server hangs
+10. **`available` on all pages** — `document.modelContext`/`navigator.modelContext` exists browser-wide; check `tool_count` (not `available`) to know if tools are registered
 
 ## External references
 
@@ -339,16 +326,24 @@ Tier 3 incompatibility is acceptable — sites requiring Camoufox-level anti-bot
 | Chromium bug tracker | https://crbug.com/new?component=2021259 |
 | Dev Preview Group | Linked from Chrome doc |
 
-## Test suite (2026-02-17)
+## Test suite
 
-Located at `tests/test_webmcp.py`. Run with:
+### Adapter stub tests — `tests/test_webmcp_adapter.py` (current, 15/15)
+
+Exercises the exact shipped JS (`_WEBMCP_DISCOVER_JS`/`_WEBMCP_CALL_JS` + `WEBMCP_INIT_SCRIPT`) against a fake `document.modelContext`/`navigator.modelContextTesting`/`window.__webmcp` injected into bundled Chromium. No server, no Chrome 149 — validates the document-path branch, in-page tool-object resolution, `untrustedContentHint` capture, navigator fallback, and `requestUserInteraction` gating. Run: `python3 tests/test_webmcp_adapter.py` (conda base).
+
+### Live integration — `tests/test_webmcp.py` (PENDING real OT)
+
+The original 48-test live suite (below) targeted the pre-OT navigator API on Chrome Beta 146 (validated 2026-02-17). It is **not currently green-claimable**: the OT `document.modelContext` path needs a 149+ channel, and the GoogleChromeLabs demo sites may have migrated to the new API. Re-validate when a 149+ channel is available.
+
+Run with:
 ```bash
 BROWSER_USE_WEBMCP=1 BROWSER_USE_CHROME_CHANNEL=chrome-beta python3 server.py --port 8500
 # In another terminal:
 python3 tests/test_webmcp.py
 ```
 
-### Results: 48/48 passed
+### Historical results (2026-02-17, Chrome Beta 146, navigator API): 48/48 passed
 
 | Test | Scope | Status |
 |------|-------|--------|
