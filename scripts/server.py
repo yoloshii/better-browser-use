@@ -2,11 +2,11 @@
 """
 Lightweight HTTP server for browser-use skill.
 
-Runs on VM 202, keeps browser sessions alive between requests.
+Keeps browser sessions alive between requests.
 Exposes the same JSON API as agent.py but over HTTP.
 
 Usage:
-    ~/.venvs/scraper/bin/python3 ~/browser-use/scripts/server.py [--port 8500]
+    python scripts/server.py [--port 8500]
 
 All requests: POST / with JSON body (same format as agent.py stdin).
 """

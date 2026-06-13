@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from config import Config, validate_profile_name, safe_profile_path, get_geo_config
+from proxy_planner import plan_proxy, proxy_to_url, geo_mismatch_warning, ports_list
+from errors import _scrub_credentials
 
 import logging
 import subprocess
@@ -344,22 +346,38 @@ def _authenticated_proxy_url() -> str | None:
 
     CloakBrowser's geoip helpers need a URL string (not a Playwright dict), and the
     library's own dict path (_extract_proxy_url) drops username/password for non-SOCKS
-    HTTP proxies — so we build the authenticated URL ourselves.
+    HTTP proxies — so we build the authenticated URL ourselves. Derives from the active
+    proxy strategy (static | port_pool | backconnect) via the planner.
     """
-    if not Config.PROXY_SERVER:
-        return None
-    proxy_url = Config.PROXY_SERVER
-    if Config.PROXY_USERNAME:
-        from urllib.parse import quote, urlparse, urlunparse
-        parsed = urlparse(proxy_url)
-        user = quote(Config.PROXY_USERNAME, safe="")
-        pwd = quote(Config.PROXY_PASSWORD, safe="") if Config.PROXY_PASSWORD else ""
-        netloc = f"{user}:{pwd}@{parsed.hostname}"
-        if parsed.port:
-            netloc += f":{parsed.port}"
-        proxy_url = urlunparse((parsed.scheme, netloc, parsed.path,
-                                parsed.params, parsed.query, parsed.fragment))
-    return proxy_url
+    return proxy_to_url(plan_proxy(Config))
+
+
+def _planned_proxy(session_id: str | None = None) -> dict | None:
+    """Build the launch proxy dict via the strategy planner, warning on misconfig + geo mismatch.
+
+    Single emission point for proxy launch warnings so each tier surfaces them exactly once:
+      - a non-static strategy that yields no proxy (silent direct launch = real-IP exposure),
+      - a port_pool with multiple ports before live rotation lands (only the first is used),
+      - a PROXY_COUNTRY vs BROWSER_USE_GEO mismatch.
+    All advisory — they never block a launch (operator owns scope).
+    """
+    proxy = plan_proxy(Config, session_id=session_id)
+    strategy = str(getattr(Config, "PROXY_STRATEGY", "static") or "static").lower()
+    if proxy is None and strategy != "static":
+        log.warning(
+            "PROXY_STRATEGY=%r set but no proxy could be built from PROXY_* config — launching "
+            "WITHOUT a proxy (direct connection; the real IP is exposed). Verify the proxy settings.",
+            strategy,
+        )
+    if strategy == "port_pool" and len(ports_list(Config.PROXY_PORTS)) > 1:
+        log.warning(
+            "port_pool has multiple ports configured but per-launch rotation is not yet active — "
+            "using the first port. Rotation lands with the proxy retry/rotation step."
+        )
+    warning = geo_mismatch_warning(Config)
+    if warning:
+        log.warning(warning)
+    return proxy
 
 
 async def _resolve_geo() -> dict[str, Any]:
@@ -383,7 +401,7 @@ async def _resolve_geo() -> dict[str, Any]:
             from cloakbrowser.geoip import resolve_proxy_exit_ip
             exit_ip = await asyncio.to_thread(resolve_proxy_exit_ip, proxy_url)
         except Exception as exc:
-            log.debug("Proxy exit-IP resolution failed (WebRTC-IP not spoofed): %s", exc)
+            log.debug("Proxy exit-IP resolution failed (WebRTC-IP not spoofed): %s", _scrub_credentials(str(exc)))
 
         # tz/locale GeoIP — DB-dependent (raises without cloakbrowser[geoip]); only when enabled.
         if Config.CLOAKBROWSER_GEOIP != "0":
@@ -398,7 +416,7 @@ async def _resolve_geo() -> dict[str, Any]:
                     log.info("GeoIP auto-detected: tz=%s locale=%s exit_ip=%s",
                              geo_tz, geo_locale, exit_ip or "n/a")
             except (ImportError, Exception) as exc:
-                log.debug("tz/locale GeoIP failed (falling back to static): %s", exc)
+                log.debug("tz/locale GeoIP failed (falling back to static): %s", _scrub_credentials(str(exc)))
 
     # A proxied session with no exit IP means WebRTC-IP is NOT spoofed → the real host IP
     # can leak via WebRTC. Surface this LOUDLY instead of silently downgrading stealth.
@@ -633,12 +651,8 @@ class Tier2Patchright(BrowserTier):
             "timezone_id": geo["timezone"],
         }
 
-        if Config.PROXY_SERVER:
-            proxy: dict[str, str] = {"server": Config.PROXY_SERVER}
-            if Config.PROXY_USERNAME:
-                proxy["username"] = Config.PROXY_USERNAME
-            if Config.PROXY_PASSWORD:
-                proxy["password"] = Config.PROXY_PASSWORD
+        proxy = _planned_proxy()
+        if proxy:
             context_opts["proxy"] = proxy
 
         if profile_path:
@@ -722,14 +736,8 @@ class Tier2CloakBrowser(BrowserTier):
         # Resolve geo with our precedence: static override > GeoIP(proxy) > default.
         geo = await _resolve_geo()
 
-        # Proxy as a Playwright proxy dict (launch_context_async accepts str | dict).
-        proxy: dict[str, str] | None = None
-        if Config.PROXY_SERVER:
-            proxy = {"server": Config.PROXY_SERVER}
-            if Config.PROXY_USERNAME:
-                proxy["username"] = Config.PROXY_USERNAME
-            if Config.PROXY_PASSWORD:
-                proxy["password"] = Config.PROXY_PASSWORD
+        # Proxy dict via the strategy planner (static | port_pool | backconnect).
+        proxy = _planned_proxy()
 
         # new_context() kwargs forwarded through the helper (storage_state, etc.).
         context_kwargs: dict[str, Any] = {}
@@ -820,18 +828,13 @@ class Tier3Camoufox(BrowserTier):
         try:
             pw = await async_playwright().start()
 
+            proxy = _planned_proxy()
             camoufox_opts: dict[str, Any] = {
                 "headless": Config.HEADLESS,
                 "humanize": Config.DEFAULT_HUMANIZE or None,
-                "geoip": bool(Config.PROXY_SERVER),
+                "geoip": bool(proxy),
             }
-
-            if Config.PROXY_SERVER:
-                proxy: dict[str, str] = {"server": Config.PROXY_SERVER}
-                if Config.PROXY_USERNAME:
-                    proxy["username"] = Config.PROXY_USERNAME
-                if Config.PROXY_PASSWORD:
-                    proxy["password"] = Config.PROXY_PASSWORD
+            if proxy:
                 camoufox_opts["proxy"] = proxy
 
             browser = await AsyncNewBrowser(pw, **camoufox_opts)
@@ -1069,7 +1072,7 @@ async def launch(
 
     Args:
         tier: Stealth tier (1=Playwright, 2=CloakBrowser/Patchright, 3=Camoufox).
-        profile: Profile name to load (from ~/.openclaw/browser-profiles/<name>/).
+        profile: Profile name to load (from ~/.browser-use/profiles/<name>/).
         viewport: Override viewport dict.
         url: Navigate to this URL after launch.
 
@@ -1098,9 +1101,9 @@ async def launch(
             viewport=viewport,
         )
     except NotImplementedError as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": _scrub_credentials(str(e))}
     except Exception as e:
-        return {"success": False, "error": f"Browser launch failed: {e}"}
+        return {"success": False, "error": _scrub_credentials(f"Browser launch failed: {e}")}
 
     page = await context.new_page()
 

@@ -70,7 +70,7 @@ curl -s -X POST http://127.0.0.1:8500/ \
   -d '<json>'
 
 # Start server
-BROWSER_USE_TOKEN=<secret> ~/.venvs/scraper/bin/python3 ~/sirus-skills/browser-use/scripts/server.py --port 8500
+BROWSER_USE_TOKEN=<secret> python scripts/server.py --port 8500
 
 # Stop
 pkill -f 'server.py --port 8500'
@@ -264,7 +264,7 @@ File downloads are auto-saved to a session temp directory. Check downloads via `
 
 Profiles store identity state across sessions:
 ```
-~/.openclaw/browser-profiles/<name>/
+~/.browser-use/profiles/<name>/
 ├── cookies.json
 ├── storage.json    (localStorage + sessionStorage)
 ├── meta.json       (tier, domain, timestamps)
@@ -365,9 +365,15 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | `BROWSER_USE_EVALUATE` | `1` | Set to `0` to disable `evaluate` (arbitrary JS) action |
 | `BROWSER_USE_HUMANIZE` | `0` | Set to `1` to force humanized actions on all tiers (Tier 2+ auto-enables) |
 | `BROWSER_USE_GEO` | (empty) | Geo profile for timezone/locale (e.g., `us`, `uk`, `de`, `jp`). See geo profiles below. |
-| `PROXY_SERVER` | (empty) | Proxy URL (e.g., `http://proxy:8080`). Used by Tier 2/3. |
-| `PROXY_USERNAME` | (empty) | Proxy auth username |
+| `PROXY_SERVER` | (empty) | Proxy URL (e.g., `http://proxy:8080`). Used by all tiers (`static` strategy). |
+| `PROXY_USERNAME` | (empty) | Proxy auth username (also the base username for `backconnect`) |
 | `PROXY_PASSWORD` | (empty) | Proxy auth password |
+| `PROXY_STRATEGY` | `static` | `static` (single `PROXY_SERVER`), `port_pool` (select from `PROXY_HOST:PROXY_PORTS`), or `backconnect` (residential geo-targeted exit) |
+| `PROXY_PROVIDER` | `decodo` | Backconnect username DSL: `decodo` or `generic` (BrightData/Oxylabs-style) |
+| `PROXY_HOST` / `PROXY_PORTS` | (empty) | `port_pool`: host + comma-separated ports (first port used until live rotation lands) |
+| `PROXY_BACKCONNECT_HOST` / `PROXY_BACKCONNECT_PORT` | (empty) | `backconnect`: residential endpoint |
+| `PROXY_COUNTRY` / `PROXY_STATE` / `PROXY_CITY` / `PROXY_ZIP` | (empty) | `backconnect` geo-targeting (encoded into the username). Keep `PROXY_COUNTRY` aligned with `BROWSER_USE_GEO` |
+| `PROXY_SESSION_DURATION_MINUTES` | (empty) | `backconnect` sticky-session lifetime (1–1440) |
 | `CLOAKBROWSER_ENABLED` | `auto` | CloakBrowser Tier 2: `auto` (use if installed), `1` (require), `0` (force Patchright) |
 | `CLOAKBROWSER_AUTO_UPDATE` | `false` | Allow CloakBrowser binary auto-updates (`true`/`false`) |
 | `CLOAKBROWSER_GEOIP` | `auto` | GeoIP from proxy: `auto` (use if cloakbrowser[geoip] installed), `0` (disable) |
@@ -382,6 +388,18 @@ reports the proxy egress, not the host. **HTTP/HTTPS proxies work out of the box
 it, the session still launches through the SOCKS5 proxy but WebRTC-IP is **not** spoofed (the real host IP
 can leak via WebRTC); this is logged as a loud `WARNING` at launch. `CLOAKBROWSER_GEOIP=0` disables
 timezone/locale GeoIP **only** — WebRTC-IP spoofing still applies whenever a proxy is active.
+
+### Proxy strategies (rotation & residential geo-targeting)
+
+`PROXY_STRATEGY` selects how each launch's proxy is built (applies to all tiers):
+
+- **`static`** (default) — one fixed proxy from `PROXY_SERVER` (+ `PROXY_USERNAME`/`PROXY_PASSWORD`). Unchanged from prior behavior.
+- **`port_pool`** — selects a port from `PROXY_HOST:{PROXY_PORTS}` (e.g. `PROXY_PORTS=10001,10002,10003`).
+- **`backconnect`** — a residential backconnect endpoint (`PROXY_BACKCONNECT_HOST:PORT`) whose exit is geo-targeted via the provider username DSL. `decodo` emits `user-{base}-country-{cc}-state-{st}-…-session-{id}-sessionduration-{min}`; `generic` passes the base username through with a session suffix.
+
+> **Scope:** this ships strategy *shaping* + geo-targeting + the geo guard below. Per-launch port round-robin and sticky-session cycling (which must thread the same exit selector through both the launch proxy and the WebRTC exit-IP probe to stay consistent) land in the follow-up rotation/retry step.
+
+**Geo-consistency guard:** when `backconnect` declares a `PROXY_COUNTRY` that disagrees with `BROWSER_USE_GEO` (e.g. proxy exits in `de` but the browser advertises `us`), a `WARNING` is logged at launch — a country mismatch between the proxy exit and the browser timezone/locale is a fingerprint inconsistency that weakens stealth. Navigation failures caused by the proxy are tagged with a sanitized `proxy_error` code (e.g. `ERR_PROXY_CONNECTION_FAILED`, `ERR_PROXY_AUTH_REQUESTED`) — no IPs or credentials in the response.
 
 ### Geo Profiles
 

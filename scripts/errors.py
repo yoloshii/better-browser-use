@@ -249,12 +249,24 @@ _PATTERN_MAP: list[tuple[str, str, object]] = [
 ]
 
 
+_CREDENTIAL_URL_RE = re.compile(r"(\w+://)[^/\s@]+@")
+
+
+def _scrub_credentials(text: str) -> str:
+    """Redact userinfo (``user:pass@``) from any ``scheme://...@`` URL in an error string.
+
+    Proxy errors can echo the full authenticated proxy URL; this keeps credentials out of
+    agent-visible error messages (and any logs that format them).
+    """
+    return _CREDENTIAL_URL_RE.sub(r"\1***@", text)
+
+
 def classify_error(
     error: Exception,
     at_state: AgentStateName | None = None,
 ) -> BrowserError:
     """Classify a Playwright/browser exception into a structured BrowserError."""
-    msg = str(error)
+    msg = _scrub_credentials(str(error))
     for pattern, code, msg_fn in _PATTERN_MAP:
         if pattern.lower() in msg.lower():
             return create_error(code, msg_fn(error), at_state=at_state, cause=error)

@@ -18,6 +18,7 @@ from typing import Any, Callable, Coroutine
 
 from behavior import HumanBehavior
 from errors import to_ai_friendly_error
+from proxy_planner import classify_proxy_error
 from snapshot import take_snapshot
 
 # Type for action handlers
@@ -131,11 +132,17 @@ async def action_navigate(page, params: dict, session: dict) -> dict:
             result["extracted_content"] += f" (SPA redirected from {url})"
         return result
     except Exception as e:
-        return {
+        result = {
             "success": False,
             "error": to_ai_friendly_error(e),
             "new_url": page.url,
         }
+        # Tag sanitized proxy failures (no IP/cred leak) so the agent can escalate/rotate.
+        proxy_diag = classify_proxy_error(str(e))
+        if proxy_diag["proxy_error"]:
+            result["proxy_error"] = proxy_diag["proxy_error"]
+            result["proxy_tls_error"] = proxy_diag["proxy_tls_error"]
+        return result
 
 
 async def action_click(page, params: dict, session: dict) -> dict:

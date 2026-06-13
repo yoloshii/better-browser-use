@@ -69,6 +69,25 @@ class Config:
     PROXY_USERNAME = os.getenv("PROXY_USERNAME", "")
     PROXY_PASSWORD = os.getenv("PROXY_PASSWORD", "")
 
+    # Proxy strategy (see scripts/proxy_planner.py): static | port_pool | backconnect.
+    # static = single PROXY_SERVER (default, backward compatible).
+    PROXY_STRATEGY = os.getenv("PROXY_STRATEGY", "static")
+    # backconnect provider username DSL: decodo | generic.
+    PROXY_PROVIDER = os.getenv("PROXY_PROVIDER", "decodo")
+    # port_pool: rotate across PROXY_HOST:{PROXY_PORTS[i]} (comma/space-separated ports).
+    PROXY_HOST = os.getenv("PROXY_HOST", "")
+    PROXY_PORTS = os.getenv("PROXY_PORTS", "")
+    # backconnect: residential sticky-session endpoint.
+    PROXY_BACKCONNECT_HOST = os.getenv("PROXY_BACKCONNECT_HOST", "")
+    PROXY_BACKCONNECT_PORT = os.getenv("PROXY_BACKCONNECT_PORT", "")
+    # Geo-targeting encoded into the backconnect username. Keep PROXY_COUNTRY aligned with
+    # BROWSER_USE_GEO — a mismatch is a fingerprint inconsistency (warned at launch).
+    PROXY_COUNTRY = os.getenv("PROXY_COUNTRY", "")
+    PROXY_STATE = os.getenv("PROXY_STATE", "")
+    PROXY_CITY = os.getenv("PROXY_CITY", "")
+    PROXY_ZIP = os.getenv("PROXY_ZIP", "")
+    PROXY_SESSION_DURATION_MINUTES = os.getenv("PROXY_SESSION_DURATION_MINUTES", "")
+
     # CAPTCHA solving (optional — bring your own pay-as-you-go API keys)
     CAPSOLVER_API_KEY = os.getenv("CAPSOLVER_API_KEY", "")
     TWOCAPTCHA_API_KEY = os.getenv("TWOCAPTCHA_API_KEY", "")
