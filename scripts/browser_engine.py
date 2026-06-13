@@ -339,47 +339,89 @@ async def _block_trackers(context: Any) -> None:
 # GeoIP resolution (auto-detect from proxy or fall back to static config)
 # ---------------------------------------------------------------------------
 
-async def _resolve_geo() -> dict[str, str]:
+def _authenticated_proxy_url() -> str | None:
+    """Full proxy URL with inline URL-encoded credentials, or None when no proxy.
+
+    CloakBrowser's geoip helpers need a URL string (not a Playwright dict), and the
+    library's own dict path (_extract_proxy_url) drops username/password for non-SOCKS
+    HTTP proxies — so we build the authenticated URL ourselves.
+    """
+    if not Config.PROXY_SERVER:
+        return None
+    proxy_url = Config.PROXY_SERVER
+    if Config.PROXY_USERNAME:
+        from urllib.parse import quote, urlparse, urlunparse
+        parsed = urlparse(proxy_url)
+        user = quote(Config.PROXY_USERNAME, safe="")
+        pwd = quote(Config.PROXY_PASSWORD, safe="") if Config.PROXY_PASSWORD else ""
+        netloc = f"{user}:{pwd}@{parsed.hostname}"
+        if parsed.port:
+            netloc += f":{parsed.port}"
+        proxy_url = urlunparse((parsed.scheme, netloc, parsed.path,
+                                parsed.params, parsed.query, parsed.fragment))
+    return proxy_url
+
+
+async def _resolve_geo() -> dict[str, Any]:
     """Resolve geo config: static env override > CloakBrowser GeoIP > default.
 
-    When BROWSER_USE_GEO is set, uses static GEO_PROFILES mapping.
-    When a proxy is configured and CloakBrowser GeoIP is available,
-    auto-detects timezone/locale from the proxy's exit IP via GeoLite2.
-    Falls back to default geo config on any failure.
+    Returns {"timezone", "locale", "exit_ip"}. exit_ip is the proxy's exit IP
+    (for WebRTC-IP spoofing via --fingerprint-webrtc-ip) or None when no proxy.
+
+    exit_ip resolution is DECOUPLED from tz/locale GeoIP. The exit IP needs only an
+    IP-echo call (no GeoLite2 DB / no `cloakbrowser[geoip]`), so it is resolved whenever
+    a proxy is active — independent of GeoIP DB availability and of CLOAKBROWSER_GEOIP.
+    `CLOAKBROWSER_GEOIP=0` disables tz/locale GeoIP ONLY; it must NOT re-open a WebRTC
+    host-IP leak on proxied sessions. tz/locale GeoIP (DB-dependent) runs only when enabled.
     """
-    # Static override always wins
-    if Config.GEO:
-        return get_geo_config()
+    geo_tz = geo_locale = exit_ip = None
+    proxy_url = _authenticated_proxy_url()
 
-    # Auto-detect from proxy if CloakBrowser GeoIP is available
-    if Config.PROXY_SERVER and Config.CLOAKBROWSER_GEOIP != "0":
+    if proxy_url:
+        # Exit IP for WebRTC — DB-independent IP echo; resolve whenever a proxy is active.
         try:
-            from cloakbrowser.geoip import resolve_proxy_geo
-            from urllib.parse import quote
+            from cloakbrowser.geoip import resolve_proxy_exit_ip
+            exit_ip = await asyncio.to_thread(resolve_proxy_exit_ip, proxy_url)
+        except Exception as exc:
+            log.debug("Proxy exit-IP resolution failed (WebRTC-IP not spoofed): %s", exc)
 
-            # Build authenticated proxy URL for GeoIP resolution
-            # CloakBrowser's geoip needs a full URL, not Playwright-style dict
-            proxy_url = Config.PROXY_SERVER
-            if Config.PROXY_USERNAME:
-                from urllib.parse import urlparse, urlunparse
-                parsed = urlparse(proxy_url)
-                user = quote(Config.PROXY_USERNAME, safe="")
-                pwd = quote(Config.PROXY_PASSWORD, safe="") if Config.PROXY_PASSWORD else ""
-                netloc = f"{user}:{pwd}@{parsed.hostname}"
-                if parsed.port:
-                    netloc += f":{parsed.port}"
-                proxy_url = urlunparse((parsed.scheme, netloc, parsed.path,
-                                        parsed.params, parsed.query, parsed.fragment))
+        # tz/locale GeoIP — DB-dependent (raises without cloakbrowser[geoip]); only when enabled.
+        if Config.CLOAKBROWSER_GEOIP != "0":
+            try:
+                from cloakbrowser.geoip import resolve_proxy_geo_with_ip
+                geo_tz, geo_locale, ip2 = await asyncio.to_thread(
+                    resolve_proxy_geo_with_ip, proxy_url
+                )
+                if ip2 and not exit_ip:          # reuse DB-path IP if the echo call missed
+                    exit_ip = ip2
+                if geo_tz and geo_locale:
+                    log.info("GeoIP auto-detected: tz=%s locale=%s exit_ip=%s",
+                             geo_tz, geo_locale, exit_ip or "n/a")
+            except (ImportError, Exception) as exc:
+                log.debug("tz/locale GeoIP failed (falling back to static): %s", exc)
 
-            tz, locale = await asyncio.to_thread(resolve_proxy_geo, proxy_url)
-            if tz and locale:
-                log.info("GeoIP auto-detected: tz=%s locale=%s", tz, locale)
-                return {"timezone": tz, "locale": locale}
-        except (ImportError, Exception) as exc:
-            log.debug("GeoIP auto-detect failed (falling back to static): %s", exc)
+    # A proxied session with no exit IP means WebRTC-IP is NOT spoofed → the real host IP
+    # can leak via WebRTC. Surface this LOUDLY instead of silently downgrading stealth.
+    # (Most common cause: a SOCKS5 proxy without socksio — the exit-IP probe raises
+    # httpx.UnsupportedProtocol. HTTP/HTTPS proxies do not need it.)
+    if proxy_url and exit_ip is None:
+        is_socks = proxy_url.lower().startswith(("socks5://", "socks5h://", "socks4://"))
+        hint = ("SOCKS5 exit-IP resolution needs socksio — install `cloakbrowser[geoip]`."
+                if is_socks else "Check proxy reachability and the GeoIP timeout.")
+        log.warning(
+            "Proxy active but exit IP unresolved — WebRTC-IP NOT spoofed; the real host IP "
+            "can leak via WebRTC. %s", hint
+        )
 
-    # Default fallback
-    return get_geo_config()
+    # tz/locale precedence: static override > proxy GeoIP > default.
+    if Config.GEO:
+        base = get_geo_config()
+    elif geo_tz and geo_locale:
+        base = {"timezone": geo_tz, "locale": geo_locale}
+    else:
+        base = get_geo_config()
+
+    return {"timezone": base["timezone"], "locale": base["locale"], "exit_ip": exit_ip}
 
 
 # ---------------------------------------------------------------------------
@@ -661,70 +703,76 @@ class Tier2CloakBrowser(BrowserTier):
         viewport: dict | None = None,
         **kwargs: Any,
     ) -> tuple[Any, Any, Any]:
-        from cloakbrowser import ensure_binary, binary_info
-        from cloakbrowser.config import get_default_stealth_args
-        from playwright.async_api import async_playwright
+        # Adopt CloakBrowser's own launch helper rather than hand-rolling
+        # pw.chromium.launch(executable_path=...). The helper owns the stealth launch:
+        #   - applies cloakbrowser.config.IGNORE_DEFAULT_ARGS (suppresses BOTH
+        #     --enable-automation AND --enable-unsafe-swiftshader; hand-rolling dropped the
+        #     latter, leaking a SwiftShader software-WebGL fingerprint that contradicts the
+        #     binary's GPU spoof), and
+        #   - wires the binary geoip/WebRTC path: resolves the proxy exit IP and injects
+        #     --fingerprint-webrtc-ip, and sets timezone/locale as binary flags
+        #     (--fingerprint-timezone / --lang) instead of weaker CDP context emulation.
+        from cloakbrowser import ensure_binary, launch_context_async
 
-        # ensure_binary() is sync and may download ~200MB — don't block the loop
-        binary_path = await asyncio.to_thread(ensure_binary)
+        # Pre-ensure the binary OFF the event loop. launch_context_async() calls the sync
+        # ensure_binary() internally; doing it here via to_thread guarantees a ~200MB cold
+        # download cannot block the loop. Idempotent — returns the cached path on a warm cache.
+        await asyncio.to_thread(ensure_binary)
 
-        pw = await async_playwright().start()
+        # Resolve geo with our precedence: static override > GeoIP(proxy) > default.
+        geo = await _resolve_geo()
 
-        # Build args: CloakBrowser stealth args + no-sandbox for WSL2/containers
-        cloak_args = get_default_stealth_args()
-        cloak_args.extend(["--no-sandbox", "--disable-setuid-sandbox"])
-
-        # Proxy config (applied at browser level for CloakBrowser)
-        launch_kwargs: dict[str, Any] = {}
+        # Proxy as a Playwright proxy dict (launch_context_async accepts str | dict).
+        proxy: dict[str, str] | None = None
         if Config.PROXY_SERVER:
-            proxy: dict[str, str] = {"server": Config.PROXY_SERVER}
+            proxy = {"server": Config.PROXY_SERVER}
             if Config.PROXY_USERNAME:
                 proxy["username"] = Config.PROXY_USERNAME
             if Config.PROXY_PASSWORD:
                 proxy["password"] = Config.PROXY_PASSWORD
-            launch_kwargs["proxy"] = proxy
 
-        browser = await pw.chromium.launch(
-            executable_path=binary_path,
-            headless=Config.HEADLESS,
-            args=cloak_args,
-            ignore_default_args=["--enable-automation"],
-            **launch_kwargs,
-        )
-
-        # Resolve geo: static override > GeoIP from proxy > default
-        geo = await _resolve_geo()
-
-        context_opts: dict[str, Any] = {
-            "viewport": viewport or Config.CLOAK_VIEWPORT,
-            # No custom user_agent — CloakBrowser's binary handles UA via seed
-            "locale": geo["locale"],
-            "timezone_id": geo["timezone"],
-        }
-
-        if Config.PROXY_SERVER and "proxy" not in launch_kwargs:
-            # Proxy at context level if not already at browser level
-            context_opts["proxy"] = launch_kwargs.get("proxy")
-
+        # new_context() kwargs forwarded through the helper (storage_state, etc.).
+        context_kwargs: dict[str, Any] = {}
         if profile_path:
             storage_path = Path(profile_path) / "storage.json"
             if storage_path.exists():
-                context_opts["storage_state"] = str(storage_path)
+                context_kwargs["storage_state"] = str(storage_path)
 
-        context = await browser.new_context(**context_opts)
+        # WebRTC-IP spoofing: we resolve the proxy exit IP ourselves in _resolve_geo() using
+        # AUTHENTICATED credentials and pass --fingerprint-webrtc-ip explicitly. We do NOT use
+        # the helper's geoip=True path: its dict-proxy extraction drops HTTP-proxy auth
+        # (_extract_proxy_url), so it would probe unauthenticated and never set the flag. With
+        # geoip=False the helper does no second (unauthenticated) lookup.
+        args = ["--no-sandbox", "--disable-setuid-sandbox"]  # WSL2/containers; deduped vs stealth defaults
+        if geo.get("exit_ip"):
+            args.append(f"--fingerprint-webrtc-ip={geo['exit_ip']}")
 
-        # Block trackers/fingerprinters on stealth tiers
+        context = await launch_context_async(
+            headless=Config.HEADLESS,
+            proxy=proxy,
+            args=args,
+            viewport=viewport or Config.CLOAK_VIEWPORT,
+            # No custom user_agent — CloakBrowser's binary handles UA via seed.
+            locale=geo["locale"],
+            timezone=geo["timezone"],
+            geoip=False,
+            **context_kwargs,
+        )
+        browser = context.browser
+
+        # Block trackers/fingerprinters on stealth tiers.
         await _block_trackers(context)
 
-        return pw, browser, context
+        # handle is None: launch_context_async() owns the Playwright instance and patches
+        # browser.close() to stop it (see teardown).
+        return None, browser, context
 
     async def teardown(self, handle: Any, browser: Any) -> None:
+        # launch_context_async() patches browser.close() to also stop the underlying
+        # Playwright instance, so closing the browser is the complete teardown.
+        # handle is None for this tier (the helper hides the pw handle).
         try:
             await browser.close()
-        except Exception:
-            pass
-        try:
-            await handle.stop()
         except Exception:
             pass
 

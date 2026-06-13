@@ -134,7 +134,8 @@ PROXY_PASSWORD=your_password
 ```
 
 - No proxy is configured by default — all tiers work without one
-- Tier 2 (CloakBrowser) auto-detects timezone/locale from proxy exit IP via GeoLite2 DB when available
+- Tier 2 (CloakBrowser) auto-detects timezone/locale from proxy exit IP via GeoLite2 DB when available (requires `cloakbrowser[geoip]`)
+- Tier 2 also spoofs WebRTC IP: it resolves the proxy exit IP (independent of the GeoLite DB — HTTP/HTTPS proxies work without `[geoip]`) and injects `--fingerprint-webrtc-ip`. SOCKS5 exit-IP resolution needs `socksio` (`cloakbrowser[geoip]`); without it a WARNING is logged that WebRTC-IP is not spoofed. `CLOAKBROWSER_GEOIP=0` disables tz/locale GeoIP only, NOT WebRTC-IP spoofing
 - Tier 3 (Camoufox) auto-detects timezone/locale from proxy exit IP when `geoip=True`
 - For anti-bot sites requiring residential IPs, use a residential/ISP proxy provider
 - Set `BROWSER_USE_GEO` to override auto-detected locale (takes precedence over GeoIP)

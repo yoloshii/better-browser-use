@@ -83,7 +83,7 @@ Three browser engines with progressive anti-detection:
 | Tier | Engine | Tracker Blocking | Humanization | Use Case |
 |------|--------|:---:|:---:|------|
 | 1 | Playwright (Chromium) | - | Opt-in | General browsing, friendly sites |
-| 2 | CloakBrowser (C++ patched Chromium) / Patchright fallback | Yes | Auto | Moderate anti-bot (33 C++ source patches, no `navigator.webdriver` leak) |
+| 2 | CloakBrowser (C++ patched Chromium) / Patchright fallback | Yes | Auto | Strong anti-bot (58 C++ source patches on Chromium 146 — GPU/canvas/WebGL/audio/TLS + binary WebRTC-IP spoof, no `navigator.webdriver` leak) |
 | 3 | Camoufox (Firefox C++ fork) | Yes | Auto | Turnstile, DataDome, PerimeterX — with GeoIP + residential proxy |
 
 All tiers auto-install their browser binaries on first use.
@@ -475,9 +475,10 @@ scripts/
 - Avoid 1.56+ (WSL2 regression: `new_page()` hangs in headless mode)
 
 **Tier 2 — CloakBrowser** (C++ patched Chromium):
-- `pip install cloakbrowser` — binary auto-downloaded on first use (~200MB, cached at `~/.cloakbrowser/`)
-- GeoIP auto-detection from proxy exit IP via GeoLite2 DB (when proxy configured)
+- `pip install cloakbrowser` — 58 C++ source patches on Chromium 146; binary auto-downloaded on first use (~200MB, cached at `~/.cloakbrowser/`)
+- Add the `[geoip]` extra (`pip install 'cloakbrowser[geoip]'`) for proxy GeoIP tz/locale + SOCKS5 WebRTC-IP spoofing. With a proxy, Tier 2 resolves the exit IP and injects `--fingerprint-webrtc-ip` (HTTP/HTTPS work without the extra; SOCKS5 needs it, otherwise a WARNING is logged that WebRTC-IP is not spoofed)
 - Patchright (`pip install patchright`) is an optional fallback for unsupported platforms or if explicitly disabled via `CLOAKBROWSER_ENABLED=0`
+- WSL2 note: headless `page.screenshot()` can time out on the Chromium 146 binary (the no-GPU vGPU can't composite a capture frame); navigate/snapshot/extract work normally — use a real-GPU host for screenshots
 
 **Tier 3 — Camoufox** (anti-detect Firefox):
 - `pip install 'camoufox[geoip]' && python -m camoufox fetch`

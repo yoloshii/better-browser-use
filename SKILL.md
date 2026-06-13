@@ -374,6 +374,15 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | `CAPSOLVER_API_KEY` | (empty) | CapSolver API key for CAPTCHA solving (primary, fast AI) |
 | `TWOCAPTCHA_API_KEY` | (empty) | 2Captcha API key for CAPTCHA solving (fallback, human) |
 
+### Proxy WebRTC-IP spoofing (Tier 2)
+
+When a proxy is set, Tier 2 resolves the proxy's exit IP and injects `--fingerprint-webrtc-ip` so WebRTC
+reports the proxy egress, not the host. **HTTP/HTTPS proxies work out of the box.** **SOCKS5 proxies**
+(`socks5://` / `socks5h://`) need `socksio` for exit-IP resolution — install `cloakbrowser[geoip]`. Without
+it, the session still launches through the SOCKS5 proxy but WebRTC-IP is **not** spoofed (the real host IP
+can leak via WebRTC); this is logged as a loud `WARNING` at launch. `CLOAKBROWSER_GEOIP=0` disables
+timezone/locale GeoIP **only** — WebRTC-IP spoofing still applies whenever a proxy is active.
+
 ### Geo Profiles
 
 Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
@@ -405,7 +414,7 @@ Set `BROWSER_USE_GEO` to match browser timezone/locale to proxy exit location:
 - Avoid 1.56+ (WSL2 regression: `new_page()` hangs in headless mode)
 
 **Tier 2 — CloakBrowser (stealth Chromium, preferred) or Patchright (fallback):**
-- cloakbrowser (`pip install cloakbrowser`) — 33 C++ source-level Chromium patches (canvas, WebGL, audio, TLS, navigator). Binary auto-downloads ~200MB on first use.
+- cloakbrowser (`pip install cloakbrowser`) — 58 C++ source-level Chromium patches on Chromium 146 (canvas, WebGL, audio, TLS, navigator, WebRTC IP, WebAuthn). Binary auto-downloads ~200MB on first use. Add the `[geoip]` extra (`pip install 'cloakbrowser[geoip]'`) for proxy GeoIP + SOCKS5 WebRTC-IP spoofing.
 - Patchright (`pip install patchright && patchright install chromium`) is an optional fallback for unsupported platforms or if explicitly disabled via `CLOAKBROWSER_ENABLED=0`
 - Set `CLOAKBROWSER_ENABLED=0` to force Patchright, `CLOAKBROWSER_AUTO_UPDATE=true` to allow binary updates
 - GeoIP auto-detects timezone/locale from proxy when `cloakbrowser[geoip]` is installed
@@ -432,6 +441,7 @@ All tiers auto-install their browser binaries on first use if not already presen
 |-------|------|---------|------------|
 | Playwright 1.56+ hangs | 1 | `new_page()` never returns in headless mode | Pin `playwright>=1.51,<1.56` |
 | Tier 3 Turnstile failure | 3 | Camoufox passes launch but Cloudflare Turnstile never solves (90s poll, zero captures) | Run on native Linux VM via SSH |
+| Tier 2 screenshot timeout | 2 | CloakBrowser **146** binary: `page.screenshot()` hangs after "fonts loaded" — WSL2's no-GPU vGPU can't composite a capture frame; all fallbacks time out. Navigate / snapshot / extract work normally. | Run on a real-GPU host (native Linux/server). Binary-level (145→146) WSL2 regression — reproduces on old + new launch paths and with SwiftShader on/off; not a launch-refactor issue. |
 | Virtual GPU fingerprinting | 3 | WSL2's synthetic GPU/display stack produces fingerprints Turnstile detects as non-human | Native KVM VM passes; WSL2 does not |
 
 **Tier 3 on WSL2 is unreliable for Turnstile-protected sites.** Camoufox generates hardware-backed fingerprints from the host GPU — WSL2's virtual GPU (Microsoft Basic Render Driver / vGPU) produces inconsistent canvas, WebGL, and audio fingerprints that Cloudflare detects. Tiers 1-2 work normally on WSL2 for non-Turnstile sites.
