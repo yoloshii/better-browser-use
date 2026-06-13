@@ -215,7 +215,10 @@ async def handle_request_inner(request_data: dict) -> dict:
             # Persist updated ref_map to session state after snapshot
             if action_name == "snapshot" and "ref_map" in session_ctx:
                 browser_engine.set_session_ref_map(session_id, session_ctx["ref_map"])
-                result["refs"] = session_ctx["ref_map"]
+                # Echo the full map back — unless paging already returned a windowed,
+                # ref-filtered view (the full map stays persisted server-side either way).
+                if not result.get("paged"):
+                    result["refs"] = session_ctx["ref_map"]
             # Persist a ref_map that a stale-ref auto-refresh rebuilt mid-action,
             # so subsequent actions (and batched steps) see the fresh refs.
             elif session_ctx.get("_ref_map_dirty") and "ref_map" in session_ctx:
@@ -298,7 +301,7 @@ async def handle_request_inner(request_data: dict) -> dict:
 
     elif op == "snapshot":
         import browser_engine
-        from snapshot import take_snapshot
+        from snapshot import take_snapshot, paginate_tree
 
         session_id = request_data.get("session_id")
         if not session_id:
@@ -348,6 +351,16 @@ async def handle_request_inner(request_data: dict) -> dict:
 
                 if extra_header:
                     result["tree"] = extra_header + result["tree"]
+
+            # Ref-aware paging (opt-in via max_chars): window the tree for large pages.
+            # The FULL ref map was already persisted above, so every ref stays resolvable.
+            if result.get("success"):
+                result = paginate_tree(
+                    result,
+                    offset=request_data.get("offset", 0),
+                    max_chars=request_data.get("max_chars", 0),
+                    tail_chars=request_data.get("tail_chars", 3000),
+                )
 
             return result
 

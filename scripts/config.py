@@ -51,6 +51,12 @@ class Config:
     DEFAULT_TIMEOUT = 30_000  # ms
     HEADLESS = True
 
+    # Tier 3 (Camoufox) headless mode override. Empty → use HEADLESS. "virtual" runs
+    # headful inside a Camoufox-managed Xvfb display (less detectable than headless;
+    # FAILS LOUD if Xvfb is missing rather than silently dropping stealth). "true"/"1"
+    # force headless, "false"/"0" force headful (needs a real display).
+    CAMOUFOX_HEADLESS = os.getenv("CAMOUFOX_HEADLESS", "").strip().lower()
+
     # Stealth tiers
     MAX_TIER = 3
     DOMAIN_TIER_CACHE_PATH = Path.home() / ".browser-use" / "profiles" / "domain_tiers.json"

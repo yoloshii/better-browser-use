@@ -452,6 +452,75 @@ async def take_snapshot(
     return result
 
 
+def _as_int(value, default: int) -> int:
+    """Coerce a (possibly string/JSON) value to int, falling back on bad input."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def paginate_tree(result: dict, *, offset: int = 0, max_chars: int = 0,
+                  tail_chars: int = 3000) -> dict:
+    """Window a snapshot result's `tree` for large pages, ref-safely (opt-in).
+
+    `max_chars <= 0` disables paging (returns `result` unchanged — the default, so
+    behavior is identical unless a caller asks to page). Otherwise returns a COPY
+    whose `tree` is the [offset, offset+max_chars) window, always followed by the
+    trailing `tail_chars` (where nav/footer links live) when they fall outside the
+    window, plus pagination metadata (`paged`, `page_offset`, `next_offset`,
+    `total_chars`).
+
+    Ref safety: the caller MUST have already persisted the FULL ref map server-side
+    before calling this — `refs` in the returned copy is filtered to only those that
+    appear in the windowed text (keeps the response lean), but every ref from the full
+    page still resolves. The pagination note says so explicitly, so a paged window is
+    never read as "these are the only refs".
+    """
+    offset = _as_int(offset, 0)
+    max_chars = _as_int(max_chars, 0)
+    tail_chars = _as_int(tail_chars, 3000)
+    tree = result.get("tree", "")
+    if max_chars <= 0 or len(tree) <= max_chars:
+        return result
+
+    total = len(tree)
+    offset = max(0, min(offset, total))
+    window = tree[offset:offset + max_chars]
+    end = offset + len(window)
+    has_more = end < total
+    next_offset = end if has_more else None
+
+    body = window
+    # Always surface the trailing nav/footer region when it is past the window.
+    if has_more and tail_chars > 0:
+        tail = tree[-tail_chars:]
+        body = f"{window}\n\n… [nav tail — last {tail_chars} of {total} chars] …\n{tail}"
+
+    note = (
+        f"[paged snapshot: chars {offset}–{end} of {total}"
+        + (f"; request offset={next_offset} for the next window" if has_more
+           else "; final window")
+        + "; refs outside this window still resolve — take the next window or act by ref]\n"
+    )
+    windowed_text = note + body
+
+    # Exact @eN tokens in the window (substring `k in text` would treat @e1 as visible
+    # whenever @e10/@e11 appears — a false positive).
+    visible_keys = set(re.findall(r"(?<!\w)@e\d+(?!\d)", windowed_text))
+    full_refs = result.get("refs", {})
+    visible_refs = {k: v for k, v in full_refs.items() if k in visible_keys}
+
+    out = dict(result)
+    out["tree"] = windowed_text
+    out["refs"] = visible_refs
+    out["paged"] = True
+    out["page_offset"] = offset
+    out["next_offset"] = next_offset
+    out["total_chars"] = total
+    return out
+
+
 def _find_tab_index(page) -> int:
     pages = page.context.pages
     for i, p in enumerate(pages):

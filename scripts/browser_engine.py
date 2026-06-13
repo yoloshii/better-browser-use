@@ -47,6 +47,30 @@ _launches_in_flight: int = 0
 _last_launch_at: float = 0.0
 
 
+def _camoufox_headless_mode():
+    """Resolve the Tier 3 Camoufox headless setting from Config.CAMOUFOX_HEADLESS.
+
+    Returns 'virtual' (headful inside a Camoufox-managed Xvfb), True (headless), or
+    False (headful). Empty config falls back to Config.HEADLESS.
+    """
+    raw = (getattr(Config, "CAMOUFOX_HEADLESS", "") or "").strip().lower()
+    if raw == "virtual":
+        return "virtual"
+    if raw in ("false", "0", "no"):
+        return False
+    if raw in ("true", "1", "yes"):
+        return True
+    return Config.HEADLESS
+
+
+def _camoufox_headless_label() -> str:
+    """Status label for the resolved Tier 3 headless mode."""
+    mode = _camoufox_headless_mode()
+    if mode == "virtual":
+        return "virtual"
+    return "headless" if mode else "headful"
+
+
 # ---------------------------------------------------------------------------
 # Auto-install helpers
 # ---------------------------------------------------------------------------
@@ -846,15 +870,27 @@ class Tier3Camoufox(BrowserTier):
             pw = await async_playwright().start()
 
             proxy = _planned_proxy()
+            headless_mode = _camoufox_headless_mode()
             camoufox_opts: dict[str, Any] = {
-                "headless": Config.HEADLESS,
+                "headless": headless_mode,
                 "humanize": Config.DEFAULT_HUMANIZE or None,
                 "geoip": bool(proxy),
             }
             if proxy:
                 camoufox_opts["proxy"] = proxy
 
-            browser = await AsyncNewBrowser(pw, **camoufox_opts)
+            try:
+                browser = await AsyncNewBrowser(pw, **camoufox_opts)
+            except Exception as exc:
+                # FAIL LOUD for virtual mode — never silently fall back to headless
+                # and quietly forfeit the stealth edge the operator asked for.
+                if headless_mode == "virtual":
+                    raise RuntimeError(
+                        "CAMOUFOX_HEADLESS=virtual needs a working Xvfb virtual display. "
+                        "Install Xvfb (e.g. `apt-get install xvfb`) or unset CAMOUFOX_HEADLESS. "
+                        f"Camoufox launch error: {exc}"
+                    ) from exc
+                raise
 
             geo = get_geo_config()
             context_opts: dict[str, Any] = {
@@ -1182,6 +1218,8 @@ async def launch(
         "tier": tier,
         "tier_engine": tier_impl.name,
     }
+    if tier == 3:
+        result["camoufox_headless"] = _camoufox_headless_label()
 
     if url:
         try:

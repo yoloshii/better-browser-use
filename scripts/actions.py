@@ -19,7 +19,7 @@ from typing import Any, Callable, Coroutine
 from behavior import HumanBehavior
 from errors import to_ai_friendly_error
 from proxy_planner import classify_proxy_error
-from snapshot import take_snapshot
+from snapshot import take_snapshot, paginate_tree
 
 # Type for action handlers
 ActionHandler = Callable[..., Coroutine[Any, Any, dict]]
@@ -445,6 +445,16 @@ async def action_snapshot(page, params: dict, session: dict) -> dict:
             result["spa_to"] = page.url
             # Update so we only flag once per redirect
             session["_last_nav_url"] = page.url
+
+    # Ref-aware paging (opt-in via max_chars): window the tree for large pages. The
+    # session ref_map set above stays FULL, so every ref remains resolvable.
+    if result.get("success"):
+        result = paginate_tree(
+            result,
+            offset=params.get("offset", 0),
+            max_chars=params.get("max_chars", 0),
+            tail_chars=params.get("tail_chars", 3000),
+        )
 
     return result
 

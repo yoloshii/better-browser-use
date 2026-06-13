@@ -62,6 +62,7 @@ Element has no ARIA role?
 | `spa_navigation: true` | Snapshot URL differs from last navigate URL | SPA routed after initial load; `spa_from`/`spa_to` show the drift |
 | `ref_refreshed: true` | A stale ref was safely re-resolved against a rebuilt snapshot | Re-snapshot to re-sync your other refs |
 | `snapshot_required: true` | Ref/element was stale and couldn't be safely re-resolved | Take a new snapshot, then use the fresh ref |
+| `paged: true` | Snapshot tree was windowed (large page, you passed `max_chars`) | Read the window; request `offset=next_offset` for more — every ref still resolves |
 
 ## Common Patterns
 

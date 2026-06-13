@@ -166,7 +166,7 @@ Returns: `{success, screenshot}` (base64 PNG)
 | `fill` | `{ref, value}` | Atomic fill (clears first). For forms. |
 | `type` | `{ref, text, delay_ms?}` | Character-by-character typing. For compose/search. |
 | `scroll` | `{direction: up\|down, amount: int\|"page"}` | Scroll page |
-| `snapshot` | `{compact?, max_depth?, cursor_interactive?}` | ARIA tree + refs |
+| `snapshot` | `{compact?, max_depth?, cursor_interactive?, offset?, max_chars?, tail_chars?}` | ARIA tree + refs. `max_chars>0` pages a large tree (window + nav-tail); the response adds `paged`/`next_offset`/`total_chars` and the listed `refs` are windowed — but **every** ref still resolves (full map kept server-side). Request `offset=next_offset` for the next window. |
 | `screenshot` | `{full_page?}` | Base64 PNG |
 | `wait` | `{ms?, selector?, text?, state?, timeout?}` | Wait for time, selector, or text. `state`: visible\|hidden\|attached (default: visible). Max 30s. |
 | `evaluate` | `{js, deep_query?, frame_url?}` | Execute JavaScript (requires BROWSER_USE_EVALUATE=1). Set `deep_query: true` to inject `deepQuery(sel)` / `deepQueryAll(sel)` helpers that pierce shadow DOM. |
@@ -396,6 +396,7 @@ Detected protections: cloudflare, datadome, akamai, perimeterx, captcha, generic
 | `PROXY_COUNTRY` / `PROXY_STATE` / `PROXY_CITY` / `PROXY_ZIP` | (empty) | `backconnect` geo-targeting (encoded into the username). Keep `PROXY_COUNTRY` aligned with `BROWSER_USE_GEO` |
 | `PROXY_SESSION_DURATION_MINUTES` | (empty) | `backconnect` sticky-session lifetime (1–1440) |
 | `CLOAKBROWSER_ENABLED` | `auto` | CloakBrowser Tier 2: `auto` (use if installed), `1` (require), `0` (force Patchright) |
+| `CAMOUFOX_HEADLESS` | (empty) | Tier 3 headless override: `virtual` (headful inside a Camoufox-managed Xvfb — less detectable; **fails loud** if Xvfb missing, never silently headless), `true`/`1`, `false`/`0`; empty uses `HEADLESS` |
 | `CLOAKBROWSER_AUTO_UPDATE` | `false` | Allow CloakBrowser binary auto-updates (`true`/`false`) |
 | `CLOAKBROWSER_GEOIP` | `auto` | GeoIP from proxy: `auto` (use if cloakbrowser[geoip] installed), `0` (disable) |
 | `CAPSOLVER_API_KEY` | (empty) | CapSolver API key for CAPTCHA solving (primary, fast AI) |
